@@ -6,7 +6,8 @@
   "scripts": {
     "build": "tsc && ncc build build/index.js -o dist",
     "test": "vitest",
-    "lint": "tsc --noEmit"
+    "lint": "tsc --noEmit",
+    "generate-examples": "tsx scripts/generate-examples.ts"
   },
   "keywords": [
     "effect-ts",
@@ -26,6 +27,7 @@
     "@types/node": "^20.0.0",
     "@vercel/ncc": "^0.38.0",
     "effect": "^3.19.19",
+    "tsx": "^4.21.0",
     "vitest": "^3.0.0"
   }
 }
