@@ -1,4 +1,5 @@
 import type { FlowGraph, FlowNode } from "../analysis/flow-analyzer.js";
+import { splitConnectedComponents } from "../analysis/graph-utils.js";
 import { escapeLabel, sanitizeId, truncateIfNeeded } from "./mermaid.js";
 
 export interface FlowDiagramResult {
@@ -53,40 +54,10 @@ export function renderFlowDiagrams(graph: FlowGraph): FlowDiagramResult[] {
   return results;
 }
 
-/** Split a graph into connected components via BFS. */
-function splitConnectedComponents(graph: FlowGraph): FlowGraph[] {
-  const adjMap = new Map<string, Set<string>>();
-  for (const node of graph.nodes) {
-    adjMap.set(node.id, new Set());
-  }
-  for (const edge of graph.edges) {
-    adjMap.get(edge.from)?.add(edge.to);
-    adjMap.get(edge.to)?.add(edge.from);
-  }
-
-  const visited = new Set<string>();
-  const components: FlowGraph[] = [];
-
-  for (const node of graph.nodes) {
-    if (visited.has(node.id)) continue;
-    const componentIds = new Set<string>();
-    const queue = [node.id];
-    while (queue.length > 0) {
-      const id = queue.pop()!;
-      if (visited.has(id)) continue;
-      visited.add(id);
-      componentIds.add(id);
-      for (const neighbor of adjMap.get(id) ?? []) {
-        if (!visited.has(neighbor)) queue.push(neighbor);
-      }
-    }
-    components.push({
-      nodes: graph.nodes.filter((n) => componentIds.has(n.id)),
-      edges: graph.edges.filter((e) => componentIds.has(e.from)),
-    });
-  }
-
-  return components;
+/** Convenience wrapper that returns the first diagram result (for single-diagram callers). */
+export function renderFlowDiagram(graph: FlowGraph): FlowDiagramResult {
+  const results = renderFlowDiagrams(graph);
+  return results[0] ?? { label: "", mermaid: "flowchart TD" };
 }
 
 function buildLabel(node: FlowNode): string {

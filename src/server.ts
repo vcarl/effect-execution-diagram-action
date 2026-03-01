@@ -13,8 +13,10 @@ import * as os from "node:os";
 import { createProjectContext } from "./analysis/project-setup.js";
 import { analyzeFlows } from "./analysis/flow-analyzer.js";
 import { analyzeErrors } from "./analysis/error-analyzer.js";
+import { buildProgramMap } from "./analysis/program-map.js";
 import { renderFlowDiagrams } from "./diagrams/flow-diagram.js";
 import { renderErrorDiagrams } from "./diagrams/error-diagram.js";
+import { renderProgramMapDiagram } from "./diagrams/program-map-diagram.js";
 
 // ---------------------------------------------------------------------------
 // GitHub API helpers
@@ -114,6 +116,7 @@ interface DiagramEntry {
 
 interface AnalyzeResponse {
   files: string[];
+  map?: DiagramEntry;
   flows?: DiagramEntry[];
   errors?: DiagramEntry[];
 }
@@ -129,7 +132,7 @@ async function analyze(req: AnalyzeRequest): Promise<AnalyzeResponse> {
   );
 
   if (changedFiles.length === 0) {
-    return { files: [], flow: undefined, error: undefined };
+    return { files: [] };
   }
 
   // 2. Create temp dir and fetch file contents
@@ -210,6 +213,19 @@ async function analyze(req: AnalyzeRequest): Promise<AnalyzeResponse> {
     }
 
     const response: AnalyzeResponse = { files: changedFiles };
+
+    // Build program map (no layer data in server mode)
+    if (flowResult.nodes.length > 0) {
+      const mapData = buildProgramMap(flowResult, errorResult, undefined);
+      if (mapData.programs.length > 0) {
+        const mapDiagram = renderProgramMapDiagram(mapData);
+        response.map = {
+          label: "Program Map",
+          mermaid: mapDiagram.mermaid,
+          truncated: mapDiagram.truncated,
+        };
+      }
+    }
 
     if (flowResult.nodes.length > 0) {
       response.flows = renderFlowDiagrams(flowResult);
@@ -387,6 +403,14 @@ const HTML = `<!DOCTYPE html>
           html += '</ul></details>';
         }
 
+        // Program Map
+        if (data.map) {
+          html += '<div class="diagram-section"><h3>Program Map</h3>';
+          html += '<div class="mermaid">' + escapeHtml(data.map.mermaid) + '</div>';
+          if (data.map.truncated) html += '<p class="no-results">Diagram was truncated due to size.</p>';
+          html += '</div>';
+        }
+
         // Flow diagrams
         if (data.flows && data.flows.length > 0) {
           html += '<div class="diagram-section"><h3>Execution Flow</h3>';
@@ -409,7 +433,7 @@ const HTML = `<!DOCTYPE html>
           html += '</div>';
         }
 
-        if (!data.flows?.length && !data.errors?.length) {
+        if (!data.map && !data.flows?.length && !data.errors?.length) {
           if (data.files && data.files.length > 0) {
             html += '<p class="no-results">No Effect-TS patterns (pipe/gen/flatMap/error handling) found in the changed files.</p>';
           } else {
@@ -494,7 +518,7 @@ const server = http.createServer(async (req, res) => {
       );
       const result = await analyze(parsed);
       console.log(
-        `  → ${result.files.length} files, flows=${result.flows?.length ?? 0}, errors=${result.errors?.length ?? 0}`
+        `  → ${result.files.length} files, map=${result.map ? "yes" : "no"}, flows=${result.flows?.length ?? 0}, errors=${result.errors?.length ?? 0}`
       );
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(JSON.stringify(result));

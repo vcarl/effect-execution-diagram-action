@@ -7,9 +7,11 @@ import { analyzeOverview } from "./analysis/overview-parser.js";
 import { analyzeLayerInfo } from "./analysis/layerinfo-parser.js";
 import { analyzeFlows } from "./analysis/flow-analyzer.js";
 import { analyzeErrors } from "./analysis/error-analyzer.js";
+import { buildProgramMap } from "./analysis/program-map.js";
 import { renderLayerDiagram } from "./diagrams/layer-diagram.js";
 import { renderFlowDiagram } from "./diagrams/flow-diagram.js";
 import { renderErrorDiagram } from "./diagrams/error-diagram.js";
+import { renderProgramMapDiagram } from "./diagrams/program-map-diagram.js";
 
 export async function run(): Promise<void> {
   const token = core.getInput("github-token", { required: true });
@@ -17,6 +19,7 @@ export async function run(): Promise<void> {
   const includeFlow = core.getBooleanInput("include-flow-diagram");
   const includeLayer = core.getBooleanInput("include-layer-diagram");
   const includeError = core.getBooleanInput("include-error-diagram");
+  const includeMap = core.getBooleanInput("include-program-map");
 
   const octokit = github.getOctokit(token);
   const { owner, repo } = github.context.repo;
@@ -41,47 +44,83 @@ export async function run(): Promise<void> {
   // 2. Set up TypeScript project context
   const project = createProjectContext(tsconfigPath);
 
-  // 3. Run analyses
-  const sections: DiagramSection[] = [];
+  // 3. Determine which analyses are needed (program map may require all three)
+  const needFlow = includeFlow || includeMap;
+  const needLayer = includeLayer || includeMap;
+  const needError = includeError || includeMap;
 
-  if (includeFlow) {
+  // 4. Run analyses
+  let flowResults: ReturnType<typeof analyzeFlows> | undefined;
+  let overviewResults: Awaited<ReturnType<typeof analyzeOverview>> | undefined;
+  let layerResults: Awaited<ReturnType<typeof analyzeLayerInfo>> | undefined;
+  let errorResults: ReturnType<typeof analyzeErrors> | undefined;
+
+  if (needFlow) {
     core.info("Analyzing execution flow...");
-    const flowResults = analyzeFlows(project, changedFiles);
-    if (flowResults.nodes.length > 0) {
-      sections.push({
-        title: "Execution Flow",
-        ...renderFlowDiagram(flowResults),
-      });
-    }
+    flowResults = analyzeFlows(project, changedFiles);
   }
 
-  if (includeLayer) {
+  if (needLayer) {
     core.info("Analyzing layer dependencies...");
-    const overviewResults = await analyzeOverview(changedFiles, tsconfigPath);
+    overviewResults = await analyzeOverview(changedFiles, tsconfigPath);
     if (overviewResults.layers.length > 0) {
-      const layerResults = await analyzeLayerInfo(
+      layerResults = await analyzeLayerInfo(
         overviewResults.layers,
         tsconfigPath
       );
-      sections.push({
-        title: "Layer Dependencies",
-        ...renderLayerDiagram(layerResults),
-      });
     }
   }
 
-  if (includeError) {
+  if (needError) {
     core.info("Analyzing error channels...");
-    const errorResults = analyzeErrors(project, changedFiles);
-    if (errorResults.chains.length > 0) {
+    errorResults = analyzeErrors(project, changedFiles);
+  }
+
+  // 5. Build diagram sections
+  const sections: DiagramSection[] = [];
+
+  // Program Map (first, as overview)
+  if (includeMap && flowResults && flowResults.nodes.length > 0) {
+    core.info("Building program map...");
+    const layerFileMap = overviewResults
+      ? new Map(overviewResults.layers.map((l) => [l.name, l.file]))
+      : undefined;
+    const mapData = buildProgramMap(
+      flowResults,
+      errorResults,
+      layerResults,
+      layerFileMap
+    );
+    if (mapData.programs.length > 0) {
       sections.push({
-        title: "Error Channels",
-        ...renderErrorDiagram(errorResults),
+        title: "Program Map",
+        ...renderProgramMapDiagram(mapData),
       });
     }
   }
 
-  // 4. Post comment
+  if (includeFlow && flowResults && flowResults.nodes.length > 0) {
+    sections.push({
+      title: "Execution Flow",
+      ...renderFlowDiagram(flowResults),
+    });
+  }
+
+  if (includeLayer && layerResults) {
+    sections.push({
+      title: "Layer Dependencies",
+      ...renderLayerDiagram(layerResults),
+    });
+  }
+
+  if (includeError && errorResults && errorResults.chains.length > 0) {
+    sections.push({
+      title: "Error Channels",
+      ...renderErrorDiagram(errorResults),
+    });
+  }
+
+  // 6. Post comment
   if (sections.length === 0) {
     core.info("No Effect-TS patterns found in changed files, skipping comment.");
     return;

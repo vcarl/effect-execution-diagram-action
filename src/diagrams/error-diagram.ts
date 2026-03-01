@@ -44,6 +44,14 @@ export function renderErrorDiagrams(
   return results;
 }
 
+/** Convenience wrapper that returns the first diagram result (for single-diagram callers). */
+export function renderErrorDiagram(
+  analysis: ErrorAnalysisResult
+): ErrorDiagramResult {
+  const results = renderErrorDiagrams(analysis);
+  return results[0] ?? { label: "", mermaid: "flowchart LR" };
+}
+
 function shapeFor(step: ErrorStep, label: string): string {
   switch (step.kind) {
     case "catch":

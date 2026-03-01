@@ -21,6 +21,10 @@ inputs:
     description: 'Include error channel diagram'
     required: false
     default: 'true'
+  include-program-map:
+    description: 'Include program map overview diagram'
+    required: false
+    default: 'true'
 runs:
   using: 'node20'
   main: 'dist/index.js'
