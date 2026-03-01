@@ -222,9 +222,45 @@ function collectYieldExpressions(node: ts.Node): ts.YieldExpression[] {
   return yields;
 }
 
+/** Summarize an array literal's elements for display inside Effect.all([...]) */
+function summarizeArrayElements(elements: ts.NodeArray<ts.Expression>): string {
+  return elements
+    .map((el) => {
+      if (ts.isCallExpression(el)) {
+        const callee = el.expression.getText().trim();
+        const args = el.arguments;
+        if (args.length === 0) return callee + "()";
+        const firstArg = args[0].getText().trim();
+        if (firstArg.length > 25) return callee + "(…)";
+        if (args.length > 1) return callee + "(" + firstArg + ", …)";
+        return callee + "(" + firstArg + ")";
+      }
+      const text = el.getText().trim();
+      if (text.length > 30) return text.slice(0, 27) + "...";
+      return text;
+    })
+    .join(", ");
+}
+
+/** Try to expand an Effect.all/allWith call. Returns null if not applicable. */
+function tryExpandEffectAll(node: ts.CallExpression): string | null {
+  const callee = node.expression.getText().trim();
+  if (callee !== "Effect.all") return null;
+  const args = node.arguments;
+  if (args.length < 1) return null;
+  const first = args[0];
+  if (ts.isArrayLiteralExpression(first)) {
+    return `Effect.all([${summarizeArrayElements(first.elements)}])`;
+  }
+  return null;
+}
+
 function summarizeExpression(node: ts.Node): string {
-  // For call expressions, show the function name without args
   if (ts.isCallExpression(node)) {
+    // Expand Effect.all([...]) to show full contents
+    const expanded = tryExpandEffectAll(node);
+    if (expanded) return expanded;
+    // For other calls, show the function name without args
     const callee = node.expression.getText().trim();
     if (callee.length <= 60) return callee + "(…)";
     return callee.slice(0, 57) + "...";
@@ -252,6 +288,10 @@ function summarizeYield(node: ts.YieldExpression): string {
   if (!expr) return "yield*";
   // For call expressions in yields, just show the call without yield* prefix
   if (ts.isCallExpression(expr)) {
+    // Expand Effect.all([...]) to show full contents
+    const expanded = tryExpandEffectAll(expr);
+    if (expanded) return expanded;
+
     const callee = expr.expression.getText().trim();
     const args = expr.arguments;
     if (args.length === 0) return `${callee}()`;
