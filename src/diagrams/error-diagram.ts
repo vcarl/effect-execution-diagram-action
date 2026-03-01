@@ -1,46 +1,47 @@
 import type { ErrorAnalysisResult, ErrorStep } from "../analysis/error-analyzer.js";
-import { escapeLabel, sanitizeId, truncateIfNeeded } from "./mermaid.js";
+import { escapeLabel, sanitizeId } from "./mermaid.js";
 
 export interface ErrorDiagramResult {
+  label: string;
   mermaid: string;
   truncated?: boolean;
-  shownNodes?: number;
-  totalNodes?: number;
 }
 
-export function renderErrorDiagram(
+/**
+ * Render one diagram per error chain, labelled with the enclosing
+ * scope + file name.
+ */
+export function renderErrorDiagrams(
   analysis: ErrorAnalysisResult
-): ErrorDiagramResult {
-  const allSteps = analysis.chains.flatMap((c) => c.steps);
-  const { info } = truncateIfNeeded(allSteps);
+): ErrorDiagramResult[] {
+  const results: ErrorDiagramResult[] = [];
 
-  const lines: string[] = ["flowchart LR"];
+  for (const chain of analysis.chains.filter((c) => c.steps.length > 2)) {
+    const firstStep = chain.steps[0];
+    const fileShort = firstStep
+      ? (firstStep.file.split("/").pop() ?? firstStep.file)
+      : "unknown";
+    const label = firstStep?.scope
+      ? `${firstStep.scope} · ${fileShort}`
+      : fileShort;
 
-  for (const chain of analysis.chains) {
+    const lines: string[] = ["flowchart LR"];
     for (const step of chain.steps) {
       const id = sanitizeId(step.id);
-      const label = escapeLabel(step.label);
-      lines.push(`  ${id}${shapeFor(step, label)}`);
+      const stepLabel = escapeLabel(step.label);
+      lines.push(`  ${id}${shapeFor(step, stepLabel)}`);
     }
-
     for (const edge of chain.edges) {
       const from = sanitizeId(edge.from);
       const to = sanitizeId(edge.to);
       const errorLabel = escapeLabel(edge.errorLabel);
       lines.push(`  ${from} -->|"E: ${errorLabel}"| ${to}`);
     }
+
+    results.push({ label, mermaid: lines.join("\n") });
   }
 
-  return {
-    mermaid: lines.join("\n"),
-    ...(info.truncated
-      ? {
-          truncated: true,
-          shownNodes: info.shownNodes,
-          totalNodes: info.totalNodes,
-        }
-      : {}),
-  };
+  return results;
 }
 
 function shapeFor(step: ErrorStep, label: string): string {

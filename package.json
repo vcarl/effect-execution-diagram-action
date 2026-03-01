@@ -7,7 +7,9 @@
     "build": "tsc && ncc build build/index.js -o dist",
     "test": "vitest",
     "lint": "tsc --noEmit",
-    "generate-examples": "tsx scripts/generate-examples.ts"
+    "generate-examples": "tsx scripts/generate-examples.ts",
+    "process-diff": "tsx src/dev.ts",
+    "dev": "tsx src/server.ts"
   },
   "keywords": [
     "effect-ts",

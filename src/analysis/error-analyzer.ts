@@ -7,6 +7,7 @@ export interface ErrorStep {
   errorType: string;
   line: number;
   file: string;
+  scope?: string;
   kind: "operation" | "catch" | "mapError";
 }
 
@@ -58,17 +59,18 @@ export function analyzeErrors(
     const sourceFile = getSourceFile(project, filePath);
     if (!sourceFile) continue;
 
-    visitNode(sourceFile);
+    visitNode(sourceFile, undefined);
 
-    function visitNode(node: ts.Node): void {
+    function visitNode(node: ts.Node, scope: string | undefined): void {
+      const newScope = getDeclarationName(node) ?? scope;
       if (ts.isCallExpression(node) && isPipeCall(node)) {
-        const chain = analyzePipeErrors(node, filePath);
+        const chain = analyzePipeErrors(node, filePath, newScope);
         if (chain && chain.steps.length > 0) {
           chains.push(chain);
         }
         return;
       }
-      ts.forEachChild(node, visitNode);
+      ts.forEachChild(node, (child) => visitNode(child, newScope));
     }
   }
 
@@ -76,7 +78,8 @@ export function analyzeErrors(
 
   function analyzePipeErrors(
     call: ts.CallExpression,
-    file: string
+    file: string,
+    scope?: string
   ): ErrorChain | null {
     const args = call.arguments;
     if (args.length < 2) return null;
@@ -106,6 +109,7 @@ export function analyzeErrors(
         errorType,
         line: getLine(arg),
         file,
+        scope,
         kind: errorHandlerName
           ? errorHandlerName === "mapError"
             ? "mapError"
@@ -126,6 +130,17 @@ export function analyzeErrors(
     if (!hasErrorHandler) return null;
     return { steps, edges };
   }
+}
+
+function getDeclarationName(node: ts.Node): string | undefined {
+  if (ts.isFunctionDeclaration(node) && node.name) return node.name.text;
+  if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name))
+    return node.name.text;
+  if (ts.isMethodDeclaration(node) && ts.isIdentifier(node.name))
+    return node.name.text;
+  if (ts.isPropertyAssignment(node) && ts.isIdentifier(node.name))
+    return node.name.text;
+  return undefined;
 }
 
 function getErrorHandlerName(node: ts.Node): string | null {
@@ -174,8 +189,13 @@ function isPipeCall(node: ts.CallExpression): boolean {
 }
 
 function summarizeExpression(node: ts.Node): string {
+  if (ts.isCallExpression(node)) {
+    const callee = node.expression.getText().trim();
+    if (callee.length <= 60) return callee + "(…)";
+    return callee.slice(0, 57) + "...";
+  }
   const text = node.getText().trim();
-  if (text.length > 40) return text.slice(0, 37) + "...";
+  if (text.length > 60) return text.slice(0, 57) + "...";
   return text;
 }
 
