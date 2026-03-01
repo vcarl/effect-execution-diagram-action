@@ -9,6 +9,7 @@ export interface ProgramSummary {
   file: string;
   kind: "pipe" | "gen";
   stepCount: number;
+  successType?: string;
   errorType?: string;
   requirements: string[];
 }
@@ -50,6 +51,7 @@ export function buildProgramMap(
     const name = comp.nodes[0]?.scope ?? "(module-level)";
     const file = comp.nodes[0]?.file ?? "unknown";
     const stepCount = countSteps(comp.nodes, kind);
+    const successType = collectSuccessType(comp.nodes);
     const errorType = collectErrorType(comp.nodes, errors, file, name);
     const requirements = collectRequirements(comp.nodes);
 
@@ -59,6 +61,7 @@ export function buildProgramMap(
       file,
       kind,
       stepCount,
+      successType: successType || undefined,
       errorType: errorType || undefined,
       requirements,
     });
@@ -163,4 +166,12 @@ function collectRequirements(nodes: FlowNode[]): string[] {
     }
   }
   return [...reqs];
+}
+
+/** Take the last node's success type as the program's return type. */
+function collectSuccessType(nodes: FlowNode[]): string {
+  for (let i = nodes.length - 1; i >= 0; i--) {
+    if (nodes[i].successType) return nodes[i].successType!;
+  }
+  return "";
 }

@@ -17,8 +17,8 @@ import { createProjectContext } from "./analysis/project-setup.js";
 import { analyzeFlows } from "./analysis/flow-analyzer.js";
 import { analyzeErrors } from "./analysis/error-analyzer.js";
 import { buildProgramMap } from "./analysis/program-map.js";
-import { renderFlowDiagram } from "./diagrams/flow-diagram.js";
-import { renderErrorDiagram } from "./diagrams/error-diagram.js";
+import { renderFlowDiagrams } from "./diagrams/flow-diagram.js";
+import { renderErrorDiagrams } from "./diagrams/error-diagram.js";
 import { renderProgramMapDiagram } from "./diagrams/program-map-diagram.js";
 
 function usage(): never {
@@ -144,8 +144,10 @@ if (includeMap && flowResult && flowResult.nodes.length > 0) {
 
 if (includeFlow) {
   if (flowResult && flowResult.nodes.length > 0) {
-    const diagram = renderFlowDiagram(flowResult);
-    mermaidBlock("Execution Flow", diagram.mermaid);
+    const diagrams = renderFlowDiagrams(flowResult);
+    for (const diagram of diagrams) {
+      mermaidBlock(`Execution Flow: ${diagram.label}`, diagram.mermaid);
+    }
   } else {
     console.log("### Execution Flow\n\nNo pipe/gen/flatMap patterns found.\n");
   }
@@ -153,8 +155,10 @@ if (includeFlow) {
 
 if (includeError) {
   if (errorResult && errorResult.chains.length > 0) {
-    const diagram = renderErrorDiagram(errorResult);
-    mermaidBlock("Error Channels", diagram.mermaid);
+    const diagrams = renderErrorDiagrams(errorResult);
+    for (const diagram of diagrams) {
+      mermaidBlock(`Error Channels: ${diagram.label}`, diagram.mermaid);
+    }
   } else {
     console.log("### Error Channels\n\nNo error handling patterns found.\n");
   }

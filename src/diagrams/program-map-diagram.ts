@@ -79,11 +79,45 @@ function renderProgramNode(prog: ProgramSummary): string {
   const id = sanitizeId(prog.id);
   const parts: string[] = [];
   parts.push(`${prog.kind}: ${prog.stepCount} steps`);
-  if (prog.errorType) parts.push(`E: ${escapeLabel(prog.errorType)}`);
-  if (prog.requirements.length > 0)
-    parts.push(`R: ${escapeLabel(prog.requirements.join(", "))}`);
+
+  const effectAnno = buildProgramEffectAnnotation(prog);
+  if (effectAnno) parts.push(effectAnno);
+
   const detail = parts.join(" · ");
   return `${id}["${escapeLabel(prog.name)}<br/><i>${detail}</i>"]`;
+}
+
+/**
+ * Build `Effect<A, E, R>` annotation for a program summary, using the same
+ * trailing-trivial-omission rules as the flow diagram.
+ */
+function buildProgramEffectAnnotation(prog: ProgramSummary): string | undefined {
+  const a = prog.successType;
+  const e = prog.errorType;
+  const r = prog.requirements.length > 0 ? prog.requirements.join(" | ") : undefined;
+
+  if (!a && !e && !r) return undefined;
+
+  const ea = a ? escapeLabel(a) : "_";
+  const ee = e ? escapeLabel(e) : "_";
+  const er = r ? escapeLabel(r) : undefined;
+
+  // Only A non-trivial
+  if (a && !e && !r) return `Effect&lt;${ea}&gt;`;
+  // A and E non-trivial, R trivial
+  if (a && e && !r) return `Effect&lt;${ea}, ${ee}&gt;`;
+  // All present
+  if (a && e && r) return `Effect&lt;${ea}, ${ee}, ${er}&gt;`;
+  // A and R but no E
+  if (a && !e && r) return `Effect&lt;${ea}, _, ${er}&gt;`;
+  // E only
+  if (!a && e && !r) return `Effect&lt;_, ${ee}&gt;`;
+  // R only
+  if (!a && !e && r) return `Effect&lt;_, _, ${er}&gt;`;
+  // E and R
+  if (!a && e && r) return `Effect&lt;_, ${ee}, ${er}&gt;`;
+
+  return undefined;
 }
 
 function renderLayerNode(layer: LayerSummary): string {

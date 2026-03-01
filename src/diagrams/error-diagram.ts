@@ -16,7 +16,7 @@ export function renderErrorDiagrams(
 ): ErrorDiagramResult[] {
   const results: ErrorDiagramResult[] = [];
 
-  for (const chain of analysis.chains.filter((c) => c.steps.length > 2)) {
+  for (const chain of analysis.chains.filter((c) => c.steps.length > 1)) {
     const firstStep = chain.steps[0];
     const fileShort = firstStep
       ? (firstStep.file.split("/").pop() ?? firstStep.file)

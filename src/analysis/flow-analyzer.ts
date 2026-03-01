@@ -8,8 +8,10 @@ export interface FlowNode {
   file: string;
   scope?: string;
   kind: "effect" | "gen-start" | "gen-end" | "yield" | "pipe-step";
+  successType?: string;
   errorType?: string;
   requirements?: string;
+  ref?: string;
 }
 
 export interface FlowEdge {
@@ -85,6 +87,7 @@ export function analyzeFlows(
         i === 0 ? summarizeExpression(arg) : summarizePipeStep(arg);
 
       const typeInfo = getEffectTypeInfo(arg, project);
+      const ref = i === 0 ? getRefName(arg) : undefined;
       allNodes.push({
         id,
         label,
@@ -93,6 +96,7 @@ export function analyzeFlows(
         scope,
         kind: i === 0 ? "effect" : "pipe-step",
         ...typeInfo,
+        ...(ref ? { ref } : {}),
       });
 
       if (prevId) {
@@ -130,6 +134,7 @@ export function analyzeFlows(
       const typeInfo = yieldedExpr
         ? getEffectTypeInfo(yieldedExpr, project)
         : {};
+      const ref = yieldedExpr ? getRefName(yieldedExpr) : undefined;
       allNodes.push({
         id,
         label,
@@ -138,6 +143,7 @@ export function analyzeFlows(
         scope,
         kind: "yield",
         ...typeInfo,
+        ...(ref ? { ref } : {}),
       });
       allEdges.push({ from: prevId, to: id });
       prevId = id;
@@ -383,13 +389,13 @@ function parseEffectTypeParams(
 }
 
 /**
- * Extract the E (error) and R (requirements) type parameters from an
+ * Extract the A (success), E (error) and R (requirements) type parameters from an
  * Effect<A, E, R> type at a given node.  Returns only non-trivial values.
  */
 function getEffectTypeInfo(
   node: ts.Node,
   project: ProjectContext
-): { errorType?: string; requirements?: string } {
+): { successType?: string; errorType?: string; requirements?: string } {
   try {
     const type = project.typeChecker.getTypeAtLocation(node);
     const typeStr = project.typeChecker.typeToString(
@@ -402,10 +408,27 @@ function getEffectTypeInfo(
     if (!params) return {};
 
     return {
+      successType: !TRIVIAL_TYPES.has(params.a) ? params.a : undefined,
       errorType: !TRIVIAL_TYPES.has(params.e) ? params.e : undefined,
       requirements: !TRIVIAL_TYPES.has(params.r) ? params.r : undefined,
     };
   } catch {
     return {};
   }
+}
+
+/**
+ * Extract a reference name from a node if it refers to another program.
+ * - Simple identifier: `loadConfig` → "loadConfig"
+ * - Call expression: `processOrder(orderId)` → "processOrder"
+ * - Property access calls: `http.get(...)` → undefined (method call, not a program)
+ */
+function getRefName(node: ts.Node): string | undefined {
+  if (ts.isIdentifier(node)) return node.text;
+  if (ts.isCallExpression(node)) {
+    const callee = node.expression;
+    if (ts.isIdentifier(callee)) return callee.text;
+    // Don't treat property access calls (e.g. http.get(...)) as program refs
+  }
+  return undefined;
 }
