@@ -16,10 +16,8 @@ import { execSync } from "node:child_process";
 import { createProjectContext } from "./analysis/project-setup.js";
 import { analyzeFlows } from "./analysis/flow-analyzer.js";
 import { analyzeErrors } from "./analysis/error-analyzer.js";
-import { buildProgramMap } from "./analysis/program-map.js";
 import { renderFlowDiagrams } from "./diagrams/flow-diagram.js";
 import { renderErrorDiagrams } from "./diagrams/error-diagram.js";
-import { renderProgramMapDiagram } from "./diagrams/program-map-diagram.js";
 
 function usage(): never {
   console.log(`Usage: npx tsx src/dev.ts [options] [files...]
@@ -30,7 +28,6 @@ Options:
   --tsconfig PATH   Path to tsconfig.json (default: tsconfig.json)
   --no-flow         Skip execution flow diagram
   --no-error        Skip error channel diagram
-  --no-map          Skip program map diagram
   -h, --help        Show this help
 
 Examples:
@@ -77,7 +74,6 @@ let tsconfigPath = "tsconfig.json";
 let files: string[] = [];
 let includeFlow = true;
 let includeError = true;
-let includeMap = true;
 let mode: "explicit" | "diff" | "all" = "explicit";
 let diffRef: string | undefined;
 
@@ -97,8 +93,6 @@ for (let i = 0; i < args.length; i++) {
     includeFlow = false;
   } else if (arg === "--no-error") {
     includeError = false;
-  } else if (arg === "--no-map") {
-    includeMap = false;
   } else {
     files.push(arg);
   }
@@ -127,20 +121,8 @@ console.log();
 // --- Run analysis ---
 const project = createProjectContext(tsconfigPath);
 
-// Always analyze flows and errors if needed for program map
-const needFlow = includeFlow || includeMap;
-const needError = includeError || includeMap;
-
-const flowResult = needFlow ? analyzeFlows(project, files) : undefined;
-const errorResult = needError ? analyzeErrors(project, files) : undefined;
-
-// Program Map (rendered first as overview — no layer data in dev mode)
-if (includeMap && flowResult && flowResult.nodes.length > 0) {
-  const mapData = buildProgramMap(flowResult, errorResult, undefined);
-  if (mapData.programs.length > 0) {
-    mermaidBlock("Program Map", renderProgramMapDiagram(mapData).mermaid);
-  }
-}
+const flowResult = includeFlow ? analyzeFlows(project, files) : undefined;
+const errorResult = includeError ? analyzeErrors(project, files) : undefined;
 
 if (includeFlow) {
   if (flowResult && flowResult.nodes.length > 0) {

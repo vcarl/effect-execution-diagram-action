@@ -7,11 +7,9 @@ import { analyzeOverview } from "./analysis/overview-parser.js";
 import { analyzeLayerInfo } from "./analysis/layerinfo-parser.js";
 import { analyzeFlows } from "./analysis/flow-analyzer.js";
 import { analyzeErrors } from "./analysis/error-analyzer.js";
-import { buildProgramMap } from "./analysis/program-map.js";
 import { renderLayerDiagram } from "./diagrams/layer-diagram.js";
 import { renderFlowDiagram } from "./diagrams/flow-diagram.js";
 import { renderErrorDiagram } from "./diagrams/error-diagram.js";
-import { renderProgramMapDiagram } from "./diagrams/program-map-diagram.js";
 
 export async function run(): Promise<void> {
   const token = core.getInput("github-token", { required: true });
@@ -19,7 +17,6 @@ export async function run(): Promise<void> {
   const includeFlow = core.getBooleanInput("include-flow-diagram");
   const includeLayer = core.getBooleanInput("include-layer-diagram");
   const includeError = core.getBooleanInput("include-error-diagram");
-  const includeMap = core.getBooleanInput("include-program-map");
 
   const octokit = github.getOctokit(token);
   const { owner, repo } = github.context.repo;
@@ -44,10 +41,10 @@ export async function run(): Promise<void> {
   // 2. Set up TypeScript project context
   const project = createProjectContext(tsconfigPath);
 
-  // 3. Determine which analyses are needed (program map may require all three)
-  const needFlow = includeFlow || includeMap;
-  const needLayer = includeLayer || includeMap;
-  const needError = includeError || includeMap;
+  // 3. Determine which analyses are needed
+  const needFlow = includeFlow;
+  const needLayer = includeLayer || includeFlow;
+  const needError = includeError;
 
   // 4. Run analyses
   let flowResults: ReturnType<typeof analyzeFlows> | undefined;
@@ -79,30 +76,10 @@ export async function run(): Promise<void> {
   // 5. Build diagram sections
   const sections: DiagramSection[] = [];
 
-  // Program Map (first, as overview)
-  if (includeMap && flowResults && flowResults.nodes.length > 0) {
-    core.info("Building program map...");
-    const layerFileMap = overviewResults
-      ? new Map(overviewResults.layers.map((l) => [l.name, l.file]))
-      : undefined;
-    const mapData = buildProgramMap(
-      flowResults,
-      errorResults,
-      layerResults,
-      layerFileMap
-    );
-    if (mapData.programs.length > 0) {
-      sections.push({
-        title: "Program Map",
-        ...renderProgramMapDiagram(mapData),
-      });
-    }
-  }
-
   if (includeFlow && flowResults && flowResults.nodes.length > 0) {
     sections.push({
       title: "Execution Flow",
-      ...renderFlowDiagram(flowResults),
+      ...renderFlowDiagram(flowResults, layerResults),
     });
   }
 
