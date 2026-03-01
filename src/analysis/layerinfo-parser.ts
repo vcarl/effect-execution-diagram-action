@@ -5,6 +5,7 @@ export interface LayerDependency {
   name: string;
   provides: string[];
   requires: string[];
+  suggestedComposition?: string[];
 }
 
 export interface LayerAnalysisResult {
@@ -56,9 +57,10 @@ export function parseLayerInfoOutput(
 ): LayerDependency {
   const provides: string[] = [];
   const requires: string[] = [];
+  const suggestedComposition: string[] = [];
 
   const lines = output.split("\n").map(stripAnsi);
-  let section: "provides" | "requires" | null = null;
+  let section: "provides" | "requires" | "suggested" | null = null;
 
   for (const line of lines) {
     const trimmed = line.trim();
@@ -72,7 +74,7 @@ export function parseLayerInfoOutput(
       continue;
     }
     if (/^Suggested Composition/i.test(trimmed)) {
-      section = null;
+      section = "suggested";
       continue;
     }
 
@@ -80,12 +82,18 @@ export function parseLayerInfoOutput(
       const item = trimmed.slice(2).trim();
       if (item) {
         if (section === "provides") provides.push(item);
-        else requires.push(item);
+        else if (section === "requires") requires.push(item);
+        else if (section === "suggested") suggestedComposition.push(item);
       }
     }
   }
 
-  return { name: layerName, provides, requires };
+  return {
+    name: layerName,
+    provides,
+    requires,
+    ...(suggestedComposition.length > 0 ? { suggestedComposition } : {}),
+  };
 }
 
 function stripAnsi(str: string): string {

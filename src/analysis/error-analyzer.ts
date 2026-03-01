@@ -5,6 +5,7 @@ export interface ErrorStep {
   id: string;
   label: string;
   errorType: string;
+  errorTypes?: string[];
   line: number;
   file: string;
   scope?: string;
@@ -97,7 +98,7 @@ export function analyzeErrors(
       }
 
       const id = nextId();
-      const errorType = getErrorTypeAtNode(arg, project);
+      const errorInfo = getErrorTypeAtNode(arg, project);
       const label =
         i === 0
           ? summarizeExpression(arg)
@@ -106,7 +107,8 @@ export function analyzeErrors(
       steps.push({
         id,
         label,
-        errorType,
+        errorType: errorInfo.errorType,
+        ...(errorInfo.errorTypes ? { errorTypes: errorInfo.errorTypes } : {}),
         line: getLine(arg),
         file,
         scope,
@@ -153,31 +155,51 @@ function getErrorHandlerName(node: ts.Node): string | null {
   return null;
 }
 
-function getErrorTypeAtNode(node: ts.Node, project: ProjectContext): string {
+interface ErrorTypeInfo {
+  errorType: string;
+  errorTypes?: string[];
+}
+
+function getErrorTypeAtNode(node: ts.Node, project: ProjectContext): ErrorTypeInfo {
   try {
     const type = project.typeChecker.getTypeAtLocation(node);
     return extractErrorType(type, project);
   } catch {
-    return "unknown";
+    return { errorType: "unknown" };
   }
 }
 
-function extractErrorType(type: ts.Type, project: ProjectContext): string {
-  // Effect<A, E, R> — E is the second type argument
-  const typeStr = project.typeChecker.typeToString(type);
+function extractErrorType(type: ts.Type, project: ProjectContext): ErrorTypeInfo {
+  // Try to get the E type parameter as a Type object
+  let errorParamType: ts.Type | undefined;
 
-  // Match Effect<..., E, ...> pattern
-  const match = typeStr.match(/^Effect<[^,]+,\s*([^,>]+)/);
-  if (match) {
-    return match[1].trim();
-  }
-
-  // Check if it's a type alias with type arguments
   if (type.aliasTypeArguments && type.aliasTypeArguments.length >= 2) {
-    return project.typeChecker.typeToString(type.aliasTypeArguments[1]);
+    errorParamType = type.aliasTypeArguments[1];
   }
 
-  return "unknown";
+  // Fall back to string parsing if aliasTypeArguments didn't work
+  if (!errorParamType) {
+    const typeStr = project.typeChecker.typeToString(type);
+    const match = typeStr.match(/^Effect<[^,]+,\s*([^,>]+)/);
+    if (match) {
+      return { errorType: match[1].trim() };
+    }
+    return { errorType: "unknown" };
+  }
+
+  const errorType = project.typeChecker.typeToString(errorParamType);
+
+  // Decompose union types into individual members
+  if (errorParamType.isUnion()) {
+    const members = (errorParamType as ts.UnionType).types
+      .map((t) => project.typeChecker.typeToString(t))
+      .filter((s) => s !== "never");
+    if (members.length > 1) {
+      return { errorType, errorTypes: members };
+    }
+  }
+
+  return { errorType };
 }
 
 function isPipeCall(node: ts.CallExpression): boolean {

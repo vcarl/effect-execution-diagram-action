@@ -23,6 +23,32 @@ describe("flow-analyzer", () => {
     expect(pipeNodes.length).toBeGreaterThanOrEqual(4);
   });
 
+  it("extracts JSDoc descriptions on entry nodes", () => {
+    const project = createProjectContext(TSCONFIG);
+    const result = analyzeFlows(project, [
+      path.join(FIXTURES_DIR, "simple-pipe.ts"),
+    ]);
+
+    // basicPipe has a JSDoc comment, should appear on first node
+    const basicPipeEntry = result.nodes.find(
+      (n) => n.scope === "basicPipe" && n.kind === "effect"
+    );
+    expect(basicPipeEntry).toBeDefined();
+    expect(basicPipeEntry!.description).toBe(
+      "Increments and doubles a number using Effect pipeline"
+    );
+
+    // methodPipe has no JSDoc, should not have description
+    const methodPipeEntry = result.nodes.find(
+      (n) => n.scope === "methodPipe" && n.kind === "effect"
+    );
+    // methodPipe may or may not be detected (it uses method-style pipe)
+    // but if it is, it should not have a description
+    if (methodPipeEntry) {
+      expect(methodPipeEntry.description).toBeUndefined();
+    }
+  });
+
   it("detects Effect.gen in gen-flow.ts", () => {
     const project = createProjectContext(TSCONFIG);
     const result = analyzeFlows(project, [

@@ -4,18 +4,21 @@ export interface ServiceInfo {
   name: string;
   file: string;
   type: string;
+  typeParams?: string[];
 }
 
 export interface LayerInfo {
   name: string;
   file: string;
   type: string;
+  typeParams?: string[];
 }
 
 export interface ErrorInfo {
   name: string;
   file: string;
   type: string;
+  typeParams?: string[];
 }
 
 export interface OverviewResult {
@@ -139,7 +142,13 @@ export function parseOverviewOutput(
 
   function flushItem() {
     if (currentName && section) {
-      const item = { name: currentName, file: currentFile, type: currentType };
+      const typeParams = parseTypeParams(currentType);
+      const item = {
+        name: currentName,
+        file: currentFile,
+        type: currentType,
+        ...(typeParams.length > 0 ? { typeParams } : {}),
+      };
       if (section === "errors") result.errors.push(item);
       else if (section === "services") result.services.push(item);
       else if (section === "layers") result.layers.push(item);
@@ -147,6 +156,51 @@ export function parseOverviewOutput(
     currentName = null;
     currentType = "";
   }
+}
+
+/**
+ * Extract top-level generic type parameters from a type string like
+ * "Context.Tag<DatabaseService>" or "Layer<HttpServer | Logger, never>".
+ * Returns an empty array if no angle brackets are found.
+ */
+export function parseTypeParams(typeStr: string): string[] {
+  const openIdx = typeStr.indexOf("<");
+  if (openIdx === -1) return [];
+
+  // Find matching closing bracket
+  let depth = 0;
+  let closeIdx = -1;
+  for (let i = openIdx; i < typeStr.length; i++) {
+    if (typeStr[i] === "<") depth++;
+    else if (typeStr[i] === ">") {
+      depth--;
+      if (depth === 0) {
+        closeIdx = i;
+        break;
+      }
+    }
+  }
+  if (closeIdx === -1) return [];
+
+  const inner = typeStr.slice(openIdx + 1, closeIdx);
+
+  // Split on commas at depth 0 (respecting nested <> brackets)
+  const params: string[] = [];
+  let current = "";
+  depth = 0;
+  for (const ch of inner) {
+    if (ch === "<") depth++;
+    else if (ch === ">") depth--;
+    if (ch === "," && depth === 0) {
+      params.push(current.trim());
+      current = "";
+    } else {
+      current += ch;
+    }
+  }
+  if (current.trim()) params.push(current.trim());
+
+  return params;
 }
 
 function stripAnsi(str: string): string {

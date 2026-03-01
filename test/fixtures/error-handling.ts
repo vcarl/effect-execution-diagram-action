@@ -31,3 +31,10 @@ export const withCatchAll = pipe(
   Effect.flatMap(() => parseResponse(null)),
   Effect.catchAll(() => Effect.succeed({ recovered: true }))
 );
+
+// Union error type: HttpError | ParseError combined via flatMap
+export const withUnionError = pipe(
+  fetchUser,
+  Effect.flatMap(() => parseResponse(null)),
+  Effect.mapError((err) => new HttpError(500))
+);

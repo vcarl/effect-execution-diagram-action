@@ -1,6 +1,7 @@
 // Test fixture: simple pipe chains
 import { Effect, pipe } from "effect";
 
+/** Increments and doubles a number using Effect pipeline */
 export const basicPipe = pipe(
   Effect.succeed(42),
   Effect.map((n) => n + 1),

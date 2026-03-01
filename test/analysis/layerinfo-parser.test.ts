@@ -16,12 +16,17 @@ Requires (2):
   - Logger
 
 Suggested Composition:
-  ...
+  - Layer.merge(DatabaseServiceLive, LoggerLive)
+  - Layer.provide(HttpServerLive, composedDeps)
 `;
     const result = parseLayerInfoOutput(output, "HttpServerLive");
     expect(result.name).toBe("HttpServerLive");
     expect(result.provides).toEqual(["HttpServer"]);
     expect(result.requires).toEqual(["DatabaseService", "Logger"]);
+    expect(result.suggestedComposition).toEqual([
+      "Layer.merge(DatabaseServiceLive, LoggerLive)",
+      "Layer.provide(HttpServerLive, composedDeps)",
+    ]);
   });
 
   it("handles layer with no requirements", () => {
@@ -36,11 +41,11 @@ Provides (1):
 Requires (0):
 
 Suggested Composition:
-  ...
 `;
     const result = parseLayerInfoOutput(output, "LoggerLive");
     expect(result.provides).toEqual(["Logger"]);
     expect(result.requires).toEqual([]);
+    expect(result.suggestedComposition).toBeUndefined();
   });
 
   it("strips ANSI codes", () => {

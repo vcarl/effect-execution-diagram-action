@@ -12,6 +12,7 @@ export interface FlowNode {
   errorType?: string;
   requirements?: string;
   ref?: string;
+  description?: string;
 }
 
 export interface FlowEdge {
@@ -70,14 +71,96 @@ export function analyzeFlows(
 
       ts.forEachChild(node, (child) => visitNode(child, newScope));
     }
+
+    // Second pass: capture simple Effect-typed declarations not already analyzed
+    analyzeSimpleEffects(sourceFile, filePath);
   }
 
   return { nodes: allNodes, edges: allEdges };
+
+  /**
+   * Walk top-level variable declarations and capture simple Effect-typed
+   * expressions (e.g. Effect.succeed(...)) that weren't already analyzed
+   * as pipe/gen/flatMap components.
+   */
+  function analyzeSimpleEffects(sourceFile: ts.SourceFile, file: string): void {
+    // Collect scope names already captured by the main pass
+    const analyzedScopes = new Set<string>();
+    for (const node of allNodes) {
+      if (node.scope && node.file === file) {
+        analyzedScopes.add(node.scope);
+      }
+    }
+
+    for (const stmt of sourceFile.statements) {
+      if (!ts.isVariableStatement(stmt)) continue;
+      for (const decl of stmt.declarationList.declarations) {
+        if (!ts.isIdentifier(decl.name)) continue;
+        const name = decl.name.text;
+        if (analyzedScopes.has(name)) continue;
+        if (!decl.initializer) continue;
+
+        const init = decl.initializer;
+
+        const description = getJsDocDescription(stmt);
+
+        // Case 1: const x = <Effect expression>
+        if (hasEffectType(init)) {
+          const id = nextId();
+          const typeInfo = getEffectTypeInfo(init, project);
+          allNodes.push({
+            id,
+            label: summarizeExpression(init),
+            line: getLine(init, project),
+            file,
+            scope: name,
+            kind: "effect",
+            ...typeInfo,
+            ...(description ? { description } : {}),
+          });
+          continue;
+        }
+
+        // Case 2: const x = (params) => <Effect expression>  (expression body only)
+        if (ts.isArrowFunction(init) && !ts.isBlock(init.body)) {
+          if (hasEffectType(init.body)) {
+            const id = nextId();
+            const typeInfo = getEffectTypeInfo(init.body, project);
+            allNodes.push({
+              id,
+              label: summarizeExpression(init.body),
+              line: getLine(init.body, project),
+              file,
+              scope: name,
+              kind: "effect",
+              ...typeInfo,
+              ...(description ? { description } : {}),
+            });
+          }
+        }
+      }
+    }
+  }
+
+  function hasEffectType(node: ts.Node): boolean {
+    try {
+      const type = project.typeChecker.getTypeAtLocation(node);
+      const typeStr = project.typeChecker.typeToString(
+        type,
+        undefined,
+        ts.TypeFormatFlags.NoTruncation
+      );
+      return typeStr.startsWith("Effect<");
+    } catch {
+      return false;
+    }
+  }
 
   function analyzePipeChain(call: ts.CallExpression, file: string, scope?: string): void {
     const args = call.arguments;
     if (args.length < 2) return;
 
+    const description = getJsDocDescription(call);
     let prevId: string | null = null;
 
     for (let i = 0; i < args.length; i++) {
@@ -97,6 +180,7 @@ export function analyzeFlows(
         kind: i === 0 ? "effect" : "pipe-step",
         ...typeInfo,
         ...(ref ? { ref } : {}),
+        ...(i === 0 && description ? { description } : {}),
       });
 
       if (prevId) {
@@ -110,6 +194,7 @@ export function analyzeFlows(
     const startId = nextId();
     const line = getLine(call, project);
     const genTypeInfo = getEffectTypeInfo(call, project);
+    const description = getJsDocDescription(call);
     allNodes.push({
       id: startId,
       label: "Effect.gen",
@@ -118,6 +203,7 @@ export function analyzeFlows(
       scope,
       kind: "gen-start",
       ...genTypeInfo,
+      ...(description ? { description } : {}),
     });
 
     // Find the generator function argument
@@ -429,6 +515,46 @@ function getRefName(node: ts.Node): string | undefined {
     const callee = node.expression;
     if (ts.isIdentifier(callee)) return callee.text;
     // Don't treat property access calls (e.g. http.get(...)) as program refs
+  }
+  return undefined;
+}
+
+/**
+ * Extract the first line of a JSDoc comment from the nearest enclosing
+ * declaration of the given node. Returns undefined if no JSDoc is found.
+ */
+function getJsDocDescription(node: ts.Node): string | undefined {
+  // Walk up to find the enclosing declaration (variable statement or function)
+  let current: ts.Node | undefined = node;
+  while (current) {
+    if (
+      ts.isVariableStatement(current) ||
+      ts.isFunctionDeclaration(current) ||
+      ts.isVariableDeclaration(current)
+    ) {
+      break;
+    }
+    current = current.parent;
+  }
+  // For VariableDeclaration, check parent VariableStatement for the JSDoc
+  if (current && ts.isVariableDeclaration(current) && current.parent?.parent) {
+    current = current.parent.parent;
+  }
+  if (!current) return undefined;
+
+  const jsDocs = ts.getJSDocCommentsAndTags(current);
+  for (const doc of jsDocs) {
+    if (ts.isJSDoc(doc) && doc.comment) {
+      const text =
+        typeof doc.comment === "string"
+          ? doc.comment
+          : doc.comment.map((c) => c.text ?? "").join("");
+      if (!text) continue;
+      // Take first line only, truncate if long
+      const firstLine = text.split("\n")[0].trim();
+      if (firstLine.length > 80) return firstLine.slice(0, 77) + "...";
+      return firstLine;
+    }
   }
   return undefined;
 }

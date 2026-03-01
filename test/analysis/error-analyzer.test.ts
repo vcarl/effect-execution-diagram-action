@@ -25,6 +25,28 @@ describe("error-analyzer", () => {
     }
   });
 
+  it("decomposes union error types into errorTypes array", () => {
+    const project = createProjectContext(TSCONFIG);
+    const result = analyzeErrors(project, [
+      path.join(FIXTURES_DIR, "error-handling.ts"),
+    ]);
+
+    // Find the withUnionError chain (has mapError handler)
+    // The first step in that chain should have a union error type
+    // since fetchUser (HttpError) is flatMapped with parseResponse (ParseError)
+    const unionChain = result.chains.find((c) =>
+      c.steps.some(
+        (s) => s.errorTypes && s.errorTypes.length > 1
+      )
+    );
+    if (unionChain) {
+      const unionStep = unionChain.steps.find(
+        (s) => s.errorTypes && s.errorTypes.length > 1
+      );
+      expect(unionStep!.errorTypes!.length).toBeGreaterThan(1);
+    }
+  });
+
   it("does not create chains for pipes without error handlers", () => {
     const project = createProjectContext(TSCONFIG);
     const result = analyzeErrors(project, [

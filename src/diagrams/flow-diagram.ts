@@ -1,4 +1,5 @@
 import type { FlowGraph, FlowNode, FlowEdge } from "../analysis/flow-analyzer.js";
+import type { LayerAnalysisResult } from "../analysis/layerinfo-parser.js";
 import { splitConnectedComponents } from "../analysis/graph-utils.js";
 import { escapeLabel, sanitizeId, truncateIfNeeded } from "./mermaid.js";
 
@@ -13,22 +14,27 @@ export interface FlowDiagramResult {
  * or Effect.gen block), labelled with the enclosing scope + file name.
  *
  * When a node has a `ref` that matches another component's scope name,
- * that sub-program is inlined as a mermaid subgraph (max depth: 1).
+ * that sub-program is inlined as a mermaid subgraph, recursively expanding
+ * nested references (with cycle prevention).
  */
-export function renderFlowDiagrams(graph: FlowGraph): FlowDiagramResult[] {
+export function renderFlowDiagrams(
+  graph: FlowGraph,
+  layers?: LayerAnalysisResult,
+): FlowDiagramResult[] {
   const components = splitConnectedComponents(graph);
   const results: FlowDiagramResult[] = [];
 
   // Build scope name → component map for sub-program lookup
+  // Include single-node components so simple Effect declarations can be inlined
   const scopeMap = new Map<string, { nodes: FlowNode[]; edges: FlowEdge[] }>();
   for (const comp of components) {
-    if (comp.nodes.length <= 1) continue;
     const scope = comp.nodes[0]?.scope;
     if (scope && !scopeMap.has(scope)) {
       scopeMap.set(scope, comp);
     }
   }
 
+  // Only render multi-node components as standalone diagrams
   for (const comp of components.filter((c) => c.nodes.length > 1)) {
     const { items: nodes, info } = truncateIfNeeded(comp.nodes);
     const nodeIds = new Set(nodes.map((n) => n.id));
@@ -54,13 +60,8 @@ export function renderFlowDiagrams(graph: FlowGraph): FlowDiagramResult[] {
       ? edges.filter((e) => e.from !== genStartId)
       : edges;
 
-    // Track which nodes get replaced by subgraphs, and occurrence counts
-    const refOccurrences = new Map<string, number>();
-    const inlinedNodeIds = new Set<string>();
-
     // Base indent: 2 spaces normally, 4 spaces inside a wrapper subgraph
     const indent = isGenFlow ? "    " : "  ";
-    const subIndent = isGenFlow ? "      " : "    ";
 
     const lines: string[] = ["flowchart TD"];
 
@@ -72,49 +73,21 @@ export function renderFlowDiagrams(graph: FlowGraph): FlowDiagramResult[] {
       lines.push(`  subgraph ${wrapperId} ["${wrapperLabel}"]`);
     }
 
-    for (const node of renderNodes) {
-      const refComp = node.ref ? scopeMap.get(node.ref) : undefined;
-      // Don't inline a component into itself
-      if (refComp && node.ref !== parentScope) {
-        const count = refOccurrences.get(node.ref!) ?? 0;
-        refOccurrences.set(node.ref!, count + 1);
-        const suffix = count > 0 ? `_${count}` : "";
-        const sgId = sanitizeId(`sg_${parentScope}_${node.ref}${suffix}`);
-        inlinedNodeIds.add(node.id);
+    const nodeIdMap = renderComponentNodes(
+      renderNodes,
+      renderEdges,
+      scopeMap,
+      parentScope,
+      "",           // no node prefix at top level
+      indent,
+      lines,
+      new Set([parentScope]),
+    );
 
-        lines.push(`${indent}subgraph ${sgId} ["${escapeLabel(node.ref!)}"]`);
-        for (const subNode of refComp.nodes) {
-          const subId = sanitizeId(`${parentScope}_${node.ref}${suffix}_${subNode.id}`);
-          lines.push(`${subIndent}${subId}${shapeFor(subNode)}`);
-        }
-        for (const subEdge of refComp.edges) {
-          const subFrom = sanitizeId(`${parentScope}_${node.ref}${suffix}_${subEdge.from}`);
-          const subTo = sanitizeId(`${parentScope}_${node.ref}${suffix}_${subEdge.to}`);
-          if (subEdge.label) {
-            lines.push(`${subIndent}${subFrom} -->|"${escapeLabel(subEdge.label)}"| ${subTo}`);
-          } else {
-            lines.push(`${subIndent}${subFrom} --> ${subTo}`);
-          }
-        }
-        lines.push(`${indent}end`);
-      } else {
-        const id = sanitizeId(node.id);
-        lines.push(`${indent}${id}${shapeFor(node)}`);
-      }
-    }
-
+    // Render edges, redirecting inlined nodes to their subgraph IDs
     for (const edge of renderEdges) {
-      const fromInlined = inlinedNodeIds.has(edge.from);
-      const toInlined = inlinedNodeIds.has(edge.to);
-      const fromNode = fromInlined ? renderNodes.find((n) => n.id === edge.from) : undefined;
-      const toNode = toInlined ? renderNodes.find((n) => n.id === edge.to) : undefined;
-
-      const fromId = fromInlined
-        ? resolveSubgraphId(parentScope, fromNode!, refOccurrences, renderNodes, edge.from)
-        : sanitizeId(edge.from);
-      const toId = toInlined
-        ? resolveSubgraphId(parentScope, toNode!, refOccurrences, renderNodes, edge.to)
-        : sanitizeId(edge.to);
+      const fromId = nodeIdMap.get(edge.from) ?? sanitizeId(edge.from);
+      const toId = nodeIdMap.get(edge.to) ?? sanitizeId(edge.to);
 
       if (edge.label) {
         lines.push(`${indent}${fromId} -->|"${escapeLabel(edge.label)}"| ${toId}`);
@@ -128,6 +101,14 @@ export function renderFlowDiagrams(graph: FlowGraph): FlowDiagramResult[] {
       lines.push("  end");
     }
 
+    // Render layer nodes + dotted edges when layer data is available
+    if (layers) {
+      const wrapperId = isGenFlow
+        ? sanitizeId(`wrapper_${parentScope}`)
+        : undefined;
+      renderLayerEdges(comp.nodes, layers, wrapperId, lines);
+    }
+
     results.push({
       label,
       mermaid: lines.join("\n"),
@@ -139,30 +120,98 @@ export function renderFlowDiagrams(graph: FlowGraph): FlowDiagramResult[] {
 }
 
 /**
- * Resolve the subgraph ID for an inlined node, so edges can target
- * the subgraph container rather than the replaced node.
+ * Render nodes for a component, recursively expanding refs into subgraphs.
+ *
+ * @param sgPrefix  - prefix for subgraph IDs: sg_{sgPrefix}_{ref}
+ * @param nodePrefix - prefix for node IDs (empty at top level, set at recursive depth to avoid collisions)
+ * @param expandedRefs - refs already expanded in this branch (cycle prevention)
+ *
+ * Returns a map of original node IDs → rendered IDs for inlined nodes
+ * (subgraph IDs), so the caller can redirect edges.
  */
-function resolveSubgraphId(
-  parentScope: string,
-  node: FlowNode,
-  refOccurrences: Map<string, number>,
+function renderComponentNodes(
   nodes: FlowNode[],
-  nodeId: string
-): string {
-  const ref = node.ref!;
-  // Count how many times this ref appeared before this node
-  let occurrence = 0;
-  for (const n of nodes) {
-    if (n.id === nodeId) break;
-    if (n.ref === ref) occurrence++;
+  edges: FlowEdge[],
+  scopeMap: Map<string, { nodes: FlowNode[]; edges: FlowEdge[] }>,
+  sgPrefix: string,
+  nodePrefix: string,
+  indent: string,
+  lines: string[],
+  expandedRefs: Set<string>,
+): Map<string, string> {
+  const nodeIdMap = new Map<string, string>();
+  const refOccurrences = new Map<string, number>();
+  const subIndent = indent + "  ";
+
+  function renderedNodeId(originalId: string): string {
+    return sanitizeId(nodePrefix ? `${nodePrefix}_${originalId}` : originalId);
   }
-  const suffix = occurrence > 0 ? `_${occurrence}` : "";
-  return sanitizeId(`sg_${parentScope}_${ref}${suffix}`);
+
+  for (const node of nodes) {
+    const refComp = node.ref ? scopeMap.get(node.ref) : undefined;
+    // Inline if we have a matching component and haven't already expanded this ref (cycle prevention)
+    if (refComp && !expandedRefs.has(node.ref!)) {
+      const count = refOccurrences.get(node.ref!) ?? 0;
+      refOccurrences.set(node.ref!, count + 1);
+      const suffix = count > 0 ? `_${count}` : "";
+      const sgId = sanitizeId(`sg_${sgPrefix}_${node.ref}${suffix}`);
+      nodeIdMap.set(node.id, sgId);
+
+      lines.push(`${indent}subgraph ${sgId} ["${escapeLabel(node.ref!)}"]`);
+
+      const childPrefix = `${sgPrefix}_${node.ref}${suffix}`;
+      const childExpandedRefs = new Set(expandedRefs);
+      childExpandedRefs.add(node.ref!);
+
+      // For gen-flow sub-programs, skip the gen-start node
+      const isChildGen = refComp.nodes[0]?.kind === "gen-start";
+      const childGenStartId = isChildGen ? refComp.nodes[0].id : undefined;
+      const childNodes = isChildGen ? refComp.nodes.slice(1) : refComp.nodes;
+      const childEdges = isChildGen
+        ? refComp.edges.filter((e) => e.from !== childGenStartId)
+        : refComp.edges;
+
+      // Recursively render child nodes (childPrefix used for both sg and node namespacing)
+      const childIdMap = renderComponentNodes(
+        childNodes,
+        childEdges,
+        scopeMap,
+        childPrefix,
+        childPrefix,
+        subIndent,
+        lines,
+        childExpandedRefs,
+      );
+
+      // Render child edges
+      for (const subEdge of childEdges) {
+        const subFrom = childIdMap.get(subEdge.from)
+          ?? sanitizeId(`${childPrefix}_${subEdge.from}`);
+        const subTo = childIdMap.get(subEdge.to)
+          ?? sanitizeId(`${childPrefix}_${subEdge.to}`);
+        if (subEdge.label) {
+          lines.push(`${subIndent}${subFrom} -->|"${escapeLabel(subEdge.label)}"| ${subTo}`);
+        } else {
+          lines.push(`${subIndent}${subFrom} --> ${subTo}`);
+        }
+      }
+
+      lines.push(`${indent}end`);
+    } else {
+      const id = renderedNodeId(node.id);
+      lines.push(`${indent}${id}${shapeFor(node)}`);
+    }
+  }
+
+  return nodeIdMap;
 }
 
 /** Convenience wrapper that returns the first diagram result (for single-diagram callers). */
-export function renderFlowDiagram(graph: FlowGraph): FlowDiagramResult {
-  const results = renderFlowDiagrams(graph);
+export function renderFlowDiagram(
+  graph: FlowGraph,
+  layers?: LayerAnalysisResult,
+): FlowDiagramResult {
+  const results = renderFlowDiagrams(graph, layers);
   return results[0] ?? { label: "", mermaid: "flowchart TD" };
 }
 
@@ -193,9 +242,69 @@ function buildEffectAnnotation(node: FlowNode): string | undefined {
 
 function buildLabel(node: FlowNode): string {
   const main = escapeLabel(node.label);
+  const parts = [main];
+  if (node.description) {
+    parts.push(`<br/><small>${escapeLabel(node.description)}</small>`);
+  }
   const annotation = buildEffectAnnotation(node);
-  if (!annotation) return main;
-  return `${main}<br/><i>${annotation}</i>`;
+  if (annotation) {
+    parts.push(`<br/><i>${annotation}</i>`);
+  }
+  return parts.join("");
+}
+
+/**
+ * Collect requirements from a component's nodes, match them to layers,
+ * and render trapezoid layer nodes with dotted edges.
+ */
+function renderLayerEdges(
+  nodes: FlowNode[],
+  layers: LayerAnalysisResult,
+  wrapperId: string | undefined,
+  lines: string[],
+): void {
+  // Collect all unique requirement service names from the component
+  const allRequirements = new Set<string>();
+  for (const node of nodes) {
+    if (node.requirements) {
+      for (const req of node.requirements.split("|")) {
+        const trimmed = req.trim();
+        if (trimmed) allRequirements.add(trimmed);
+      }
+    }
+  }
+  if (allRequirements.size === 0) return;
+
+  // Build a map of service name → layer for quick lookup
+  const serviceToLayer = new Map<string, { name: string }>();
+  for (const layer of layers.layers) {
+    for (const svc of layer.provides) {
+      serviceToLayer.set(svc, layer);
+    }
+  }
+
+  // For each requirement, find a matching layer and render it
+  const renderedLayers = new Set<string>();
+  for (const req of allRequirements) {
+    const layer = serviceToLayer.get(req);
+    if (!layer) continue;
+
+    const layerId = sanitizeId(`layer_${layer.name}`);
+    // Only render each layer node once per diagram
+    if (!renderedLayers.has(layerId)) {
+      renderedLayers.add(layerId);
+      const provides = layer.name === req
+        ? req
+        : `provides: ${req}`;
+      lines.push(
+        `  ${layerId}[/"${escapeLabel(layer.name)}<br/><i>${escapeLabel(provides)}</i>"/]`,
+      );
+    }
+
+    // Dotted edge from wrapper (or first node) to layer
+    const sourceId = wrapperId ?? sanitizeId(nodes[0].id);
+    lines.push(`  ${sourceId} -. "${escapeLabel(req)}" .-> ${layerId}`);
+  }
 }
 
 function shapeFor(node: FlowNode): string {
