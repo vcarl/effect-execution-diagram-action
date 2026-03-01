@@ -18,34 +18,31 @@ const TSCONFIG = path.join(FIXTURES_DIR, "tsconfig.json");
 
 const project = createProjectContext(TSCONFIG);
 
+function mermaidBlock(title: string, mermaid: string): void {
+  console.log(`### ${title}\n`);
+  console.log("```mermaid");
+  console.log(mermaid);
+  console.log("```\n");
+}
+
 // --- Execution Flow: gen-flow.ts ---
-console.log("=== Execution Flow (gen-flow.ts) ===\n");
 const genFlow = analyzeFlows(project, [path.join(FIXTURES_DIR, "gen-flow.ts")]);
 const genDiagram = renderFlowDiagram(genFlow);
-console.log(genDiagram.mermaid);
-
-console.log("\n");
+mermaidBlock("Execution Flow (gen-flow.ts)", genDiagram.mermaid);
 
 // --- Execution Flow: simple-pipe.ts ---
-console.log("=== Execution Flow (simple-pipe.ts) ===\n");
 const pipeFlow = analyzeFlows(project, [path.join(FIXTURES_DIR, "simple-pipe.ts")]);
 const pipeDiagram = renderFlowDiagram(pipeFlow);
-console.log(pipeDiagram.mermaid);
-
-console.log("\n");
+mermaidBlock("Execution Flow (simple-pipe.ts)", pipeDiagram.mermaid);
 
 // --- Error Channels: error-handling.ts ---
-console.log("=== Error Channels (error-handling.ts) ===\n");
 const errors = analyzeErrors(project, [path.join(FIXTURES_DIR, "error-handling.ts")]);
 const errorDiagram = renderErrorDiagram(errors);
-console.log(errorDiagram.mermaid);
-
-console.log("\n");
+mermaidBlock("Error Channels (error-handling.ts)", errorDiagram.mermaid);
 
 // --- Layer Dependencies: from layer-composition.ts fixture data ---
 // The CLI-based layer analysis requires `effect-language-service` to run against
 // the fixtures, so we use the structured data that the CLI would produce.
-console.log("=== Layer Dependencies (layer-composition.ts) ===\n");
 const layerData: LayerAnalysisResult = {
   layers: [
     { name: "HttpServerLive", provides: ["HttpServer"], requires: ["DatabaseService", "Logger"] },
@@ -54,4 +51,4 @@ const layerData: LayerAnalysisResult = {
   ],
 };
 const layerDiagram = renderLayerDiagram(layerData);
-console.log(layerDiagram.mermaid);
+mermaidBlock("Layer Dependencies (layer-composition.ts)", layerDiagram.mermaid);
