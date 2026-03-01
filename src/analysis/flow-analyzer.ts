@@ -8,6 +8,8 @@ export interface FlowNode {
   file: string;
   scope?: string;
   kind: "effect" | "gen-start" | "gen-end" | "yield" | "pipe-step";
+  errorType?: string;
+  requirements?: string;
 }
 
 export interface FlowEdge {
@@ -82,6 +84,7 @@ export function analyzeFlows(
       const label =
         i === 0 ? summarizeExpression(arg) : summarizePipeStep(arg);
 
+      const typeInfo = getEffectTypeInfo(arg, project);
       allNodes.push({
         id,
         label,
@@ -89,6 +92,7 @@ export function analyzeFlows(
         file,
         scope,
         kind: i === 0 ? "effect" : "pipe-step",
+        ...typeInfo,
       });
 
       if (prevId) {
@@ -101,6 +105,7 @@ export function analyzeFlows(
   function analyzeEffectGen(call: ts.CallExpression, file: string, scope?: string): void {
     const startId = nextId();
     const line = getLine(call, project);
+    const genTypeInfo = getEffectTypeInfo(call, project);
     allNodes.push({
       id: startId,
       label: "Effect.gen",
@@ -108,6 +113,7 @@ export function analyzeFlows(
       file,
       scope,
       kind: "gen-start",
+      ...genTypeInfo,
     });
 
     // Find the generator function argument
@@ -120,6 +126,10 @@ export function analyzeFlows(
     for (const yieldExpr of yieldExpressions) {
       const id = nextId();
       const label = summarizeYield(yieldExpr);
+      const yieldedExpr = yieldExpr.expression;
+      const typeInfo = yieldedExpr
+        ? getEffectTypeInfo(yieldedExpr, project)
+        : {};
       allNodes.push({
         id,
         label,
@@ -127,6 +137,7 @@ export function analyzeFlows(
         file,
         scope,
         kind: "yield",
+        ...typeInfo,
       });
       allEdges.push({ from: prevId, to: id });
       prevId = id;
@@ -150,6 +161,7 @@ export function analyzeFlows(
     if (args.length < 2) return;
 
     const effectId = nextId();
+    const typeInfo0 = getEffectTypeInfo(args[0], project);
     allNodes.push({
       id: effectId,
       label: summarizeExpression(args[0]),
@@ -157,6 +169,7 @@ export function analyzeFlows(
       file,
       scope,
       kind: "effect",
+      ...typeInfo0,
     });
 
     const flatMapId = nextId();
@@ -332,4 +345,67 @@ function getLine(node: ts.Node, project: ProjectContext): number {
   const sourceFile = node.getSourceFile();
   const { line } = sourceFile.getLineAndCharacterOfPosition(node.getStart());
   return line + 1; // 1-based
+}
+
+const TRIVIAL_TYPES = new Set(["never", "unknown", "any", "void"]);
+
+/**
+ * Parse Effect<A, E, R> type params handling nested angle brackets.
+ * Returns null if the string doesn't match the Effect<...> pattern.
+ */
+function parseEffectTypeParams(
+  typeStr: string
+): { a: string; e: string; r: string } | null {
+  if (!typeStr.startsWith("Effect<")) return null;
+  const inner = typeStr.slice(7); // skip "Effect<"
+
+  const params: string[] = [];
+  let depth = 0; // tracks <>, [], ()
+  let start = 0;
+  for (let i = 0; i < inner.length; i++) {
+    const ch = inner[i];
+    if (ch === "<" || ch === "[" || ch === "(") depth++;
+    else if (ch === "]" || ch === ")") depth--;
+    else if (ch === ">") {
+      if (depth === 0) {
+        params.push(inner.slice(start, i).trim());
+        break;
+      }
+      depth--;
+    } else if (ch === "," && depth === 0) {
+      params.push(inner.slice(start, i).trim());
+      start = i + 1;
+    }
+  }
+
+  if (params.length < 3) return null;
+  return { a: params[0], e: params[1], r: params[2] };
+}
+
+/**
+ * Extract the E (error) and R (requirements) type parameters from an
+ * Effect<A, E, R> type at a given node.  Returns only non-trivial values.
+ */
+function getEffectTypeInfo(
+  node: ts.Node,
+  project: ProjectContext
+): { errorType?: string; requirements?: string } {
+  try {
+    const type = project.typeChecker.getTypeAtLocation(node);
+    const typeStr = project.typeChecker.typeToString(
+      type,
+      undefined,
+      ts.TypeFormatFlags.NoTruncation
+    );
+
+    const params = parseEffectTypeParams(typeStr);
+    if (!params) return {};
+
+    return {
+      errorType: !TRIVIAL_TYPES.has(params.e) ? params.e : undefined,
+      requirements: !TRIVIAL_TYPES.has(params.r) ? params.r : undefined,
+    };
+  } catch {
+    return {};
+  }
 }

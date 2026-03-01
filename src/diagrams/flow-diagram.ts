@@ -89,8 +89,19 @@ function splitConnectedComponents(graph: FlowGraph): FlowGraph[] {
   return components;
 }
 
+function buildLabel(node: FlowNode): string {
+  const main = escapeLabel(node.label);
+  const annotations: string[] = [];
+  if (node.errorType) annotations.push(`E: ${escapeLabel(node.errorType)}`);
+  if (node.requirements)
+    annotations.push(`R: ${escapeLabel(node.requirements)}`);
+  if (annotations.length === 0) return main;
+  // Use <br/> for line break — added AFTER escaping so it stays as HTML
+  return `${main}<br/><i>${annotations.join(" · ")}</i>`;
+}
+
 function shapeFor(node: FlowNode): string {
-  const label = escapeLabel(node.label);
+  const label = buildLabel(node);
   switch (node.kind) {
     case "gen-start":
     case "gen-end":
