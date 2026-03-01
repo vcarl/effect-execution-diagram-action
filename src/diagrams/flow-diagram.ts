@@ -43,13 +43,36 @@ export function renderFlowDiagrams(graph: FlowGraph): FlowDiagramResult[] {
     const label = first?.scope ? `${first.scope} · ${fileShort}` : fileShort;
     const parentScope = first?.scope ?? "";
 
+    // For gen flows, the gen-start node becomes a wrapping subgraph
+    const isGenFlow = first?.kind === "gen-start";
+    const genStartId = isGenFlow ? first.id : undefined;
+
+    // Nodes to render (skip gen-start for gen flows)
+    const renderNodes = isGenFlow ? nodes.slice(1) : nodes;
+    // Edges to render (skip edge from gen-start for gen flows)
+    const renderEdges = isGenFlow
+      ? edges.filter((e) => e.from !== genStartId)
+      : edges;
+
     // Track which nodes get replaced by subgraphs, and occurrence counts
     const refOccurrences = new Map<string, number>();
     const inlinedNodeIds = new Set<string>();
 
+    // Base indent: 2 spaces normally, 4 spaces inside a wrapper subgraph
+    const indent = isGenFlow ? "    " : "  ";
+    const subIndent = isGenFlow ? "      " : "    ";
+
     const lines: string[] = ["flowchart TD"];
 
-    for (const node of nodes) {
+    // Open wrapper subgraph for gen flows
+    if (isGenFlow) {
+      const wrapperAnnotation = buildEffectAnnotation(first);
+      const wrapperLabel = wrapperAnnotation ?? "Effect.gen";
+      const wrapperId = sanitizeId(`wrapper_${parentScope}`);
+      lines.push(`  subgraph ${wrapperId} ["${wrapperLabel}"]`);
+    }
+
+    for (const node of renderNodes) {
       const refComp = node.ref ? scopeMap.get(node.ref) : undefined;
       // Don't inline a component into itself
       if (refComp && node.ref !== parentScope) {
@@ -59,45 +82,50 @@ export function renderFlowDiagrams(graph: FlowGraph): FlowDiagramResult[] {
         const sgId = sanitizeId(`sg_${parentScope}_${node.ref}${suffix}`);
         inlinedNodeIds.add(node.id);
 
-        lines.push(`  subgraph ${sgId} ["${escapeLabel(node.ref!)}"]`);
+        lines.push(`${indent}subgraph ${sgId} ["${escapeLabel(node.ref!)}"]`);
         for (const subNode of refComp.nodes) {
           const subId = sanitizeId(`${parentScope}_${node.ref}${suffix}_${subNode.id}`);
-          lines.push(`    ${subId}${shapeFor(subNode)}`);
+          lines.push(`${subIndent}${subId}${shapeFor(subNode)}`);
         }
         for (const subEdge of refComp.edges) {
           const subFrom = sanitizeId(`${parentScope}_${node.ref}${suffix}_${subEdge.from}`);
           const subTo = sanitizeId(`${parentScope}_${node.ref}${suffix}_${subEdge.to}`);
           if (subEdge.label) {
-            lines.push(`    ${subFrom} -->|"${escapeLabel(subEdge.label)}"| ${subTo}`);
+            lines.push(`${subIndent}${subFrom} -->|"${escapeLabel(subEdge.label)}"| ${subTo}`);
           } else {
-            lines.push(`    ${subFrom} --> ${subTo}`);
+            lines.push(`${subIndent}${subFrom} --> ${subTo}`);
           }
         }
-        lines.push("  end");
+        lines.push(`${indent}end`);
       } else {
         const id = sanitizeId(node.id);
-        lines.push(`  ${id}${shapeFor(node)}`);
+        lines.push(`${indent}${id}${shapeFor(node)}`);
       }
     }
 
-    for (const edge of edges) {
+    for (const edge of renderEdges) {
       const fromInlined = inlinedNodeIds.has(edge.from);
       const toInlined = inlinedNodeIds.has(edge.to);
-      const fromNode = fromInlined ? nodes.find((n) => n.id === edge.from) : undefined;
-      const toNode = toInlined ? nodes.find((n) => n.id === edge.to) : undefined;
+      const fromNode = fromInlined ? renderNodes.find((n) => n.id === edge.from) : undefined;
+      const toNode = toInlined ? renderNodes.find((n) => n.id === edge.to) : undefined;
 
       const fromId = fromInlined
-        ? resolveSubgraphId(parentScope, fromNode!, refOccurrences, nodes, edge.from)
+        ? resolveSubgraphId(parentScope, fromNode!, refOccurrences, renderNodes, edge.from)
         : sanitizeId(edge.from);
       const toId = toInlined
-        ? resolveSubgraphId(parentScope, toNode!, refOccurrences, nodes, edge.to)
+        ? resolveSubgraphId(parentScope, toNode!, refOccurrences, renderNodes, edge.to)
         : sanitizeId(edge.to);
 
       if (edge.label) {
-        lines.push(`  ${fromId} -->|"${escapeLabel(edge.label)}"| ${toId}`);
+        lines.push(`${indent}${fromId} -->|"${escapeLabel(edge.label)}"| ${toId}`);
       } else {
-        lines.push(`  ${fromId} --> ${toId}`);
+        lines.push(`${indent}${fromId} --> ${toId}`);
       }
+    }
+
+    // Close wrapper subgraph for gen flows
+    if (isGenFlow) {
+      lines.push("  end");
     }
 
     results.push({
