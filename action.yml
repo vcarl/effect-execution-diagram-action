@@ -1,0 +1,26 @@
+name: 'Effect-TS Flow Diagrams'
+description: 'Generate Mermaid diagrams from Effect-TS code changes in PRs'
+inputs:
+  github-token:
+    description: 'GitHub token for posting comments'
+    required: true
+    default: ${{ github.token }}
+  tsconfig-path:
+    description: 'Path to tsconfig.json'
+    required: false
+    default: 'tsconfig.json'
+  include-flow-diagram:
+    description: 'Include execution flow diagram'
+    required: false
+    default: 'true'
+  include-layer-diagram:
+    description: 'Include layer dependency diagram'
+    required: false
+    default: 'true'
+  include-error-diagram:
+    description: 'Include error channel diagram'
+    required: false
+    default: 'true'
+runs:
+  using: 'node20'
+  main: 'dist/index.js'
