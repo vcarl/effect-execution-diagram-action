@@ -20,6 +20,7 @@ export interface AnalysisNode {
   ref?: string;
   refFile?: string;
   refLabel?: string;
+  hasWeakType?: boolean;
   description?: string;
   errorHandler?: string;
 }
@@ -996,10 +997,12 @@ function parseEffectTypeParams(
   return { a: params[0], e: params[1], r: params[2] };
 }
 
+const WEAK_TYPE_RE = /\b(unknown|any)\b/;
+
 function getEffectTypeInfo(
   node: ts.Node,
   project: ProjectContext,
-): { successType?: string; errorType?: string; requirements?: string[] } {
+): { successType?: string; errorType?: string; requirements?: string[]; hasWeakType?: boolean } {
   try {
     const type = project.typeChecker.getTypeAtLocation(node);
     const typeStr = project.typeChecker.typeToString(
@@ -1011,12 +1014,20 @@ function getEffectTypeInfo(
     const params = parseEffectTypeParams(typeStr);
     if (!params) return {};
 
+    // Check raw params before trivial filtering — bare "unknown"/"any" get
+    // stripped by TRIVIAL_TYPES, but we still want to flag them.
+    const hasWeakType =
+      WEAK_TYPE_RE.test(params.a) ||
+      WEAK_TYPE_RE.test(params.e) ||
+      WEAK_TYPE_RE.test(params.r);
+
     return {
       successType: !TRIVIAL_TYPES.has(params.a) ? params.a : undefined,
       errorType: !TRIVIAL_TYPES.has(params.e) ? params.e : undefined,
       requirements: !TRIVIAL_TYPES.has(params.r)
         ? params.r.split("|").map(s => s.trim()).filter(Boolean)
         : undefined,
+      ...(hasWeakType ? { hasWeakType: true } : {}),
     };
   } catch {
     return {};

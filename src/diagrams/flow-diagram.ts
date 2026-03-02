@@ -52,6 +52,7 @@ export function renderFlowDiagrams(
     const fileShort = path.basename(file);
     const fileId = sanitizeId(`file_${fileShort}`);
     const lines: string[] = ["flowchart TD"];
+    lines.push(`  classDef weakType fill:#fff3cd,stroke:#ffc107,color:#856404`);
     lines.push(`  subgraph ${fileId} ["${escapeLabel(fileShort)}"]`);
 
     // Track gen-start node IDs → scope subgraph IDs for layer edge resolution
@@ -357,15 +358,16 @@ function renderLayerEdges(
 
 function shapeFor(node: AnalysisNode): string {
   const label = buildLabel(node);
+  const cls = node.hasWeakType ? ":::weakType" : "";
   switch (node.kind) {
     case "gen-start":
     case "gen-end":
-      return `(["${label}"])`;
+      return `(["${label}"])${cls}`;
     case "yield":
     case "pipe-step":
-      return `(["${label}"])`;
+      return `(["${label}"])${cls}`;
     case "effect":
     default:
-      return `["${label}"]`;
+      return `["${label}"]${cls}`;
   }
 }
