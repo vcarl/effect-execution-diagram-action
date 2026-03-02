@@ -25,8 +25,10 @@ Options:
   --diff [ref]      Analyze files changed vs ref (default: uncommitted changes)
   --all             Analyze all .ts files in the project
   --tsconfig PATH   Path to tsconfig.json (default: tsconfig.json)
+  --json            Output raw analysis JSON (skips diagram rendering)
   --no-flow         Skip execution flow diagram
   --no-error        Skip error channel diagram
+  --max-depth N     Max depth for cross-file ref expansion (default: 3, 0 disables)
   -h, --help        Show this help
 
 Examples:
@@ -71,8 +73,10 @@ if (args.includes("-h") || args.includes("--help")) usage();
 
 let tsconfigPath = "tsconfig.json";
 let files: string[] = [];
+let jsonOutput = false;
 let includeFlow = true;
 let includeError = true;
+let maxDepth: number | undefined;
 let mode: "explicit" | "diff" | "all" = "explicit";
 let diffRef: string | undefined;
 
@@ -88,10 +92,14 @@ for (let i = 0; i < args.length; i++) {
     }
   } else if (arg === "--all") {
     mode = "all";
+  } else if (arg === "--json") {
+    jsonOutput = true;
   } else if (arg === "--no-flow") {
     includeFlow = false;
   } else if (arg === "--no-error") {
     includeError = false;
+  } else if (arg === "--max-depth") {
+    maxDepth = parseInt(args[++i], 10);
   } else {
     files.push(arg);
   }
@@ -111,21 +119,33 @@ if (mode === "diff") {
 // Resolve to absolute paths
 files = files.map((f) => path.resolve(f));
 
-console.log(`Analyzing ${files.length} file(s):\n`);
+// Use stderr for status messages so stdout stays clean for --json piping
+const log = jsonOutput ? console.error : console.log;
+log(`Analyzing ${files.length} file(s):\n`);
 for (const f of files) {
-  console.log(`  ${path.relative(process.cwd(), f)}`);
+  log(`  ${path.relative(process.cwd(), f)}`);
 }
-console.log();
+log();
 
 // --- Run analysis ---
 async function main() {
-  const result = await analyze(tsconfigPath, files);
+  const result = await analyze(tsconfigPath, files, {
+    ...(maxDepth !== undefined ? { maxDepth } : {}),
+  });
+
+  if (jsonOutput) {
+    console.log(JSON.stringify(result, null, 2));
+    return;
+  }
 
   if (includeFlow) {
     if (result.nodes.length > 0) {
       const diagrams = renderFlowDiagrams(result);
       for (const diagram of diagrams) {
         mermaidBlock(`Execution Flow: ${diagram.label}`, diagram.mermaid);
+      }
+      if (diagrams.length === 0) {
+        console.log("### Execution Flow\n\nNo pipe/gen/flatMap patterns found.\n");
       }
     } else {
       console.log("### Execution Flow\n\nNo pipe/gen/flatMap patterns found.\n");

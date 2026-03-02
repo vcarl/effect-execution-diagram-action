@@ -16,8 +16,10 @@ export interface AnalysisNode {
   successType?: string;
   errorType?: string;
   errorTypes?: string[];
-  requirements?: string;
+  requirements?: string[];
   ref?: string;
+  refFile?: string;
+  refLabel?: string;
   description?: string;
   errorHandler?: string;
 }
@@ -60,6 +62,10 @@ export interface AnalysisResult {
   discoveredErrors: ErrorInfo[];
 }
 
+export interface AnalyzeOptions {
+  maxDepth?: number;
+}
+
 // ---------------------------------------------------------------------------
 // Main entry points
 // ---------------------------------------------------------------------------
@@ -70,12 +76,13 @@ export interface AnalysisResult {
 export async function analyze(
   tsconfigPath: string,
   files: string[],
+  options?: AnalyzeOptions,
 ): Promise<AnalysisResult> {
-  const astResult = analyzeAst(tsconfigPath, files);
+  const astResult = analyzeAst(tsconfigPath, files, { maxDepth: options?.maxDepth });
 
   // CLI: overview + layerinfo
   const overviewResult = await runOverviewAnalysis(files, tsconfigPath);
-  const layers = await enrichLayers(overviewResult.layers, tsconfigPath);
+  const layers = await enrichLayers(overviewResult.layers);
 
   return {
     ...astResult,
@@ -88,50 +95,54 @@ export async function analyze(
 /**
  * AST-only analysis (synchronous, no CLI calls).
  * Returns nodes/edges with empty services/layers/discoveredErrors.
+ *
+ * Uses iterative ref expansion: after walking the initial files, collects
+ * unresolved refs, uses TypeScript's symbol resolution to find their
+ * declaration files, walks those files, and repeats until resolved or
+ * maxDepth is hit.
  */
 export function analyzeAst(
   tsconfigPath: string,
   files: string[],
+  options?: AnalyzeOptions,
 ): AnalysisResult {
+  const maxDepth = options?.maxDepth ?? 3;
   const project = createProjectContext(tsconfigPath);
+  const analyzedFiles = new Set<string>();
+  const fileCache = new Map<string, { nodes: AnalysisNode[]; edges: AnalysisEdge[] }>();
   const allNodes: AnalysisNode[] = [];
   const allEdges: AnalysisEdge[] = [];
-  let nodeCounter = 0;
+  const nodeCounter = { value: 0 };
 
-  function nextId(): string {
-    return `n${nodeCounter++}`;
-  }
+  let pendingFiles = files;
 
-  // --- Single AST walk per file ---
-  for (const filePath of files) {
-    const sourceFile = getSourceFile(project, filePath);
-    if (!sourceFile) continue;
+  for (let depth = 0; depth <= maxDepth && pendingFiles.length > 0; depth++) {
+    for (const filePath of pendingFiles) {
+      if (analyzedFiles.has(filePath)) continue;
+      analyzedFiles.add(filePath);
 
-    visitNode(sourceFile, undefined);
-
-    function visitNode(node: ts.Node, scope: string | undefined): void {
-      const newScope = getDeclarationName(node) ?? scope;
-
-      if (ts.isCallExpression(node) && isPipeCall(node)) {
-        analyzePipeChain(node, filePath, newScope);
-        return;
+      let result = fileCache.get(filePath);
+      if (!result) {
+        result = analyzeFile(
+          project,
+          filePath,
+          nodeCounter,
+        );
+        fileCache.set(filePath, result);
       }
 
-      if (ts.isCallExpression(node) && isEffectGen(node)) {
-        analyzeEffectGen(node, filePath, newScope);
-        return;
-      }
-
-      if (ts.isCallExpression(node) && isEffectFlatMap(node)) {
-        analyzeEffectFlatMap(node, filePath, newScope);
-        return;
-      }
-
-      ts.forEachChild(node, (child) => visitNode(child, newScope));
+      allNodes.push(...result.nodes);
+      allEdges.push(...result.edges);
     }
 
-    // Second pass: capture simple Effect-typed declarations not already analyzed
-    analyzeSimpleEffects(sourceFile, filePath);
+    // Collect unresolved refs: nodes with ref + refFile where refFile not yet analyzed
+    const unresolvedFiles = new Set<string>();
+    for (const node of allNodes) {
+      if (node.ref && node.refFile && !analyzedFiles.has(node.refFile)) {
+        unresolvedFiles.add(node.refFile);
+      }
+    }
+    pendingFiles = [...unresolvedFiles];
   }
 
   return {
@@ -141,6 +152,59 @@ export function analyzeAst(
     layers: [],
     discoveredErrors: [],
   };
+}
+
+// ---------------------------------------------------------------------------
+// Per-file analysis
+// ---------------------------------------------------------------------------
+
+interface SingleFileResult {
+  nodes: AnalysisNode[];
+  edges: AnalysisEdge[];
+}
+
+function analyzeFile(
+  project: ProjectContext,
+  filePath: string,
+  nodeCounter: { value: number },
+): SingleFileResult {
+  const nodes: AnalysisNode[] = [];
+  const edges: AnalysisEdge[] = [];
+
+  function nextId(): string {
+    return `n${nodeCounter.value++}`;
+  }
+
+  const sourceFile = getSourceFile(project, filePath);
+  if (!sourceFile) return { nodes, edges };
+
+  visitNode(sourceFile, undefined);
+
+  function visitNode(node: ts.Node, scope: string | undefined): void {
+    const newScope = getDeclarationName(node) ?? scope;
+
+    if (ts.isCallExpression(node) && isPipeCall(node)) {
+      analyzePipeChain(node, filePath, newScope);
+      return;
+    }
+
+    if (ts.isCallExpression(node) && isEffectGen(node)) {
+      analyzeEffectGen(node, filePath, newScope);
+      return;
+    }
+
+    if (ts.isCallExpression(node) && isEffectFlatMap(node)) {
+      analyzeEffectFlatMap(node, filePath, newScope);
+      return;
+    }
+
+    ts.forEachChild(node, (child) => visitNode(child, newScope));
+  }
+
+  // Second pass: capture simple Effect-typed declarations not already analyzed
+  analyzeSimpleEffects(sourceFile, filePath);
+
+  return { nodes, edges };
 
   // -----------------------------------------------------------------------
   // Pipe chain analysis (unified flow + error)
@@ -151,45 +215,82 @@ export function analyzeAst(
     file: string,
     scope?: string,
   ): void {
-    const args = call.arguments;
-    if (args.length < 2) return;
+    const expr = call.expression;
+
+    // Detect method-style: receiver.pipe(step1, step2, ...)
+    // vs function-style: pipe(initial, step1, step2, ...)
+    let initial: ts.Expression;
+    let steps: readonly ts.Expression[];
+
+    if (ts.isPropertyAccessExpression(expr) && expr.name.text === "pipe") {
+      // Method-style: the receiver is the initial expression, all args are steps
+      if (call.arguments.length < 1) return;
+      initial = expr.expression;
+      steps = call.arguments;
+    } else {
+      // Function-style: first arg is initial, rest are steps
+      if (call.arguments.length < 2) return;
+      initial = call.arguments[0];
+      steps = Array.prototype.slice.call(call.arguments, 1);
+    }
 
     const description = getJsDocDescription(call);
-    let prevId: string | null = null;
 
-    for (let i = 0; i < args.length; i++) {
-      const arg = args[i];
+    // Emit entry node for the initial expression
+    const entryId = nextId();
+    const entryTypeInfo = getEffectTypeInfo(initial, project);
+    const entryErrorInfo = getErrorTypeAtNode(initial, project);
+    const entryRef = getRefName(initial);
+    const entryRefFile = resolveRefFile(initial, project);
+
+    nodes.push({
+      id: entryId,
+      label: summarizeExpression(initial),
+      line: getLine(initial),
+      file,
+      scope,
+      kind: "effect",
+      ...entryTypeInfo,
+      ...(entryErrorInfo.errorType && entryErrorInfo.errorType !== "unknown"
+        ? { errorType: entryErrorInfo.errorType }
+        : {}),
+      ...(entryErrorInfo.errorTypes ? { errorTypes: entryErrorInfo.errorTypes } : {}),
+      ...(entryRef ? { ref: entryRef } : {}),
+      ...(entryRefFile ? { refFile: entryRefFile } : {}),
+      ...(description ? { description } : {}),
+    });
+
+    let prevId = entryId;
+
+    // Emit pipe-step nodes for each step
+    for (const step of steps) {
       const id = nextId();
-      const errorHandlerName = getErrorHandlerName(arg);
-      const label =
-        i === 0
-          ? summarizeExpression(arg)
-          : errorHandlerName ?? summarizePipeStep(arg);
+      const errorHandlerName = getErrorHandlerName(step);
+      const label = errorHandlerName ?? summarizePipeStep(step);
 
-      const typeInfo = getEffectTypeInfo(arg, project);
-      const errorInfo = getErrorTypeAtNode(arg, project);
-      const ref = i === 0 ? getRefName(arg) : undefined;
+      const typeInfo = getEffectTypeInfo(step, project);
+      const errorInfo = getErrorTypeAtNode(step, project);
+      const ref = getRefFromPipeStep(step);
+      const refFile = resolveRefFile(step, project);
 
-      allNodes.push({
+      nodes.push({
         id,
         label,
-        line: getLine(arg),
+        line: getLine(step),
         file,
         scope,
-        kind: i === 0 ? "effect" : "pipe-step",
+        kind: "pipe-step",
         ...typeInfo,
         ...(errorInfo.errorType && errorInfo.errorType !== "unknown"
           ? { errorType: errorInfo.errorType }
           : {}),
         ...(errorInfo.errorTypes ? { errorTypes: errorInfo.errorTypes } : {}),
         ...(ref ? { ref } : {}),
-        ...(i === 0 && description ? { description } : {}),
+        ...(refFile ? { refFile } : {}),
         ...(errorHandlerName ? { errorHandler: errorHandlerName } : {}),
       });
 
-      if (prevId) {
-        allEdges.push({ from: prevId, to: id });
-      }
+      edges.push({ from: prevId, to: id });
       prevId = id;
     }
   }
@@ -207,7 +308,7 @@ export function analyzeAst(
     const line = getLine(call);
     const genTypeInfo = getEffectTypeInfo(call, project);
     const description = getJsDocDescription(call);
-    allNodes.push({
+    nodes.push({
       id: startId,
       label: "Effect.gen",
       line,
@@ -231,8 +332,27 @@ export function analyzeAst(
       const typeInfo = yieldedExpr
         ? getEffectTypeInfo(yieldedExpr, project)
         : {};
-      const ref = yieldedExpr ? getRefName(yieldedExpr) : undefined;
-      allNodes.push({
+      let ref = yieldedExpr ? getRefName(yieldedExpr) : undefined;
+      let refFile = yieldedExpr ? resolveRefFile(yieldedExpr, project) : undefined;
+      let refLabel: string | undefined;
+
+      // Combinator expansion: detect Effect.fork/retry/forEach and analyze inner expr
+      if (yieldedExpr && ts.isCallExpression(yieldedExpr)) {
+        const combinator = getCombinatorInner(yieldedExpr);
+        if (combinator) {
+          const syntheticScope = `${scope ?? "anon"}$${combinator.name}`;
+          visitNode(combinator.innerExpr, syntheticScope);
+          // Only set ref if inner analysis produced nodes under the synthetic scope
+          const hasInnerNodes = nodes.some(n => n.scope === syntheticScope);
+          if (hasInnerNodes) {
+            ref = syntheticScope;
+            refFile = file;
+            refLabel = `Effect.${combinator.name}`;
+          }
+        }
+      }
+
+      nodes.push({
         id,
         label,
         line: getLine(yieldExpr),
@@ -241,13 +361,15 @@ export function analyzeAst(
         kind: "yield",
         ...typeInfo,
         ...(ref ? { ref } : {}),
+        ...(refFile ? { refFile } : {}),
+        ...(refLabel ? { refLabel } : {}),
       });
-      allEdges.push({ from: prevId, to: id });
+      edges.push({ from: prevId, to: id });
       prevId = id;
     }
 
     const endId = nextId();
-    allNodes.push({
+    nodes.push({
       id: endId,
       label: "return",
       line: getLine(call),
@@ -255,7 +377,7 @@ export function analyzeAst(
       scope,
       kind: "gen-end",
     });
-    allEdges.push({ from: prevId, to: endId });
+    edges.push({ from: prevId, to: endId });
   }
 
   // -----------------------------------------------------------------------
@@ -272,7 +394,7 @@ export function analyzeAst(
 
     const effectId = nextId();
     const typeInfo0 = getEffectTypeInfo(args[0], project);
-    allNodes.push({
+    nodes.push({
       id: effectId,
       label: summarizeExpression(args[0]),
       line: getLine(args[0]),
@@ -283,7 +405,7 @@ export function analyzeAst(
     });
 
     const flatMapId = nextId();
-    allNodes.push({
+    nodes.push({
       id: flatMapId,
       label: `flatMap: ${summarizeFnArg(args[1])}`,
       line: getLine(args[1]),
@@ -292,7 +414,7 @@ export function analyzeAst(
       kind: "pipe-step",
     });
 
-    allEdges.push({ from: effectId, to: flatMapId });
+    edges.push({ from: effectId, to: flatMapId });
   }
 
   // -----------------------------------------------------------------------
@@ -301,7 +423,7 @@ export function analyzeAst(
 
   function analyzeSimpleEffects(sourceFile: ts.SourceFile, file: string): void {
     const analyzedScopes = new Set<string>();
-    for (const node of allNodes) {
+    for (const node of nodes) {
       if (node.scope && node.file === file) {
         analyzedScopes.add(node.scope);
       }
@@ -321,7 +443,7 @@ export function analyzeAst(
         if (hasEffectType(init, project)) {
           const id = nextId();
           const typeInfo = getEffectTypeInfo(init, project);
-          allNodes.push({
+          nodes.push({
             id,
             label: summarizeExpression(init),
             line: getLine(init),
@@ -338,7 +460,7 @@ export function analyzeAst(
           if (hasEffectType(init.body, project)) {
             const id = nextId();
             const typeInfo = getEffectTypeInfo(init.body, project);
-            allNodes.push({
+            nodes.push({
               id,
               label: summarizeExpression(init.body),
               line: getLine(init.body),
@@ -374,36 +496,28 @@ async function runOverviewAnalysis(
   files: string[],
   tsconfigPath: string,
 ): Promise<OverviewParseResult> {
-  const result: OverviewParseResult = {
-    services: [],
-    layers: [],
-    errors: [],
-  };
-
-  for (const file of files) {
-    try {
-      const output = await runOverview(file, tsconfigPath);
-      const parsed = parseOverviewOutput(output, file);
-      result.services.push(...parsed.services);
-      result.layers.push(...parsed.layers);
-      result.errors.push(...parsed.errors);
-    } catch {
-      // File may not contain any Effect exports; skip silently
-    }
+  if (files.length === 0) {
+    return { services: [], layers: [], errors: [] };
   }
 
-  return result;
+  // overview returns project-wide results regardless of --file,
+  // so we only need to call it once.
+  try {
+    const output = await runOverview(files[0], tsconfigPath);
+    return parseOverviewOutput(output, files[0]);
+  } catch {
+    return { services: [], layers: [], errors: [] };
+  }
 }
 
 async function enrichLayers(
   overviewLayers: OverviewParseResult["layers"],
-  tsconfigPath: string,
 ): Promise<LayerInfo[]> {
   const result: LayerInfo[] = [];
 
   for (const layer of overviewLayers) {
     try {
-      const output = await runLayerInfo(layer.file, layer.name, tsconfigPath);
+      const output = await runLayerInfo(layer.file, layer.name);
       const parsed = parseLayerInfoOutput(output, layer.name);
       result.push({
         ...layer,
@@ -607,6 +721,29 @@ export function parseTypeParams(typeStr: string): string[] {
 }
 
 // ---------------------------------------------------------------------------
+// Cross-file ref resolution
+// ---------------------------------------------------------------------------
+
+function resolveRefFile(node: ts.Node, project: ProjectContext): string | undefined {
+  const identifier = ts.isCallExpression(node) ? node.expression : node;
+  if (!ts.isIdentifier(identifier)) return undefined;
+
+  const symbol = project.typeChecker.getSymbolAtLocation(identifier);
+  if (!symbol) return undefined;
+
+  const resolved = (symbol.flags & ts.SymbolFlags.Alias)
+    ? project.typeChecker.getAliasedSymbol(symbol)
+    : symbol;
+
+  const decl = resolved.valueDeclaration ?? resolved.declarations?.[0];
+  if (!decl) return undefined;
+
+  const fileName = decl.getSourceFile().fileName;
+  if (fileName.includes("node_modules")) return undefined;
+  return fileName;
+}
+
+// ---------------------------------------------------------------------------
 // AST helpers
 // ---------------------------------------------------------------------------
 
@@ -635,6 +772,42 @@ function isEffectGen(node: ts.CallExpression): boolean {
   if (expr.name.text !== "gen") return false;
   const obj = expr.expression;
   return ts.isIdentifier(obj) && obj.text === "Effect";
+}
+
+/** Known Effect combinators whose first (or second) argument contains analyzable structure. */
+const COMBINATOR_DEFS: Record<string, { argIndex: number; extractBody: boolean }> = {
+  fork: { argIndex: 0, extractBody: false },
+  retry: { argIndex: 0, extractBody: false },
+  forEach: { argIndex: 1, extractBody: true },
+};
+
+function getCombinatorInner(
+  node: ts.CallExpression,
+): { name: string; innerExpr: ts.Node } | undefined {
+  const expr = node.expression;
+  if (!ts.isPropertyAccessExpression(expr)) return undefined;
+  const methodName = expr.name.text;
+  const obj = expr.expression;
+  if (!ts.isIdentifier(obj) || obj.text !== "Effect") return undefined;
+
+  const def = COMBINATOR_DEFS[methodName];
+  if (!def) return undefined;
+
+  const arg = node.arguments[def.argIndex];
+  if (!arg) return undefined;
+
+  if (def.extractBody) {
+    // For forEach, extract the arrow function body
+    if (ts.isArrowFunction(arg)) {
+      return { name: methodName, innerExpr: arg.body };
+    }
+    if (ts.isFunctionExpression(arg)) {
+      return { name: methodName, innerExpr: arg.body };
+    }
+    return undefined;
+  }
+
+  return { name: methodName, innerExpr: arg };
 }
 
 function isEffectFlatMap(node: ts.CallExpression): boolean {
@@ -826,7 +999,7 @@ function parseEffectTypeParams(
 function getEffectTypeInfo(
   node: ts.Node,
   project: ProjectContext,
-): { successType?: string; errorType?: string; requirements?: string } {
+): { successType?: string; errorType?: string; requirements?: string[] } {
   try {
     const type = project.typeChecker.getTypeAtLocation(node);
     const typeStr = project.typeChecker.typeToString(
@@ -841,7 +1014,9 @@ function getEffectTypeInfo(
     return {
       successType: !TRIVIAL_TYPES.has(params.a) ? params.a : undefined,
       errorType: !TRIVIAL_TYPES.has(params.e) ? params.e : undefined,
-      requirements: !TRIVIAL_TYPES.has(params.r) ? params.r : undefined,
+      requirements: !TRIVIAL_TYPES.has(params.r)
+        ? params.r.split("|").map(s => s.trim()).filter(Boolean)
+        : undefined,
     };
   } catch {
     return {};
@@ -917,6 +1092,26 @@ function getRefName(node: ts.Node): string | undefined {
   if (ts.isCallExpression(node)) {
     const callee = node.expression;
     if (ts.isIdentifier(callee)) return callee.text;
+  }
+  return undefined;
+}
+
+function getRefFromPipeStep(node: ts.Node): string | undefined {
+  if (!ts.isCallExpression(node)) return undefined;
+  for (const arg of node.arguments) {
+    if (ts.isArrowFunction(arg) || ts.isFunctionExpression(arg)) {
+      const body = arg.body;
+      if (!ts.isBlock(body)) {
+        return getRefName(body);
+      }
+      const returns = body.statements.filter(ts.isReturnStatement);
+      if (returns.length === 1 && returns[0].expression) {
+        return getRefName(returns[0].expression);
+      }
+    }
+    if (ts.isIdentifier(arg)) {
+      return arg.text;
+    }
   }
   return undefined;
 }
