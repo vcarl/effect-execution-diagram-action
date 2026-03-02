@@ -6,6 +6,8 @@
   "scripts": {
     "build": "tsc && ncc build build/index.js -o dist",
     "test": "vitest",
+    "test:integration": "vitest --config vitest.integration.config.ts",
+    "test:all": "vitest && vitest --config vitest.integration.config.ts",
     "lint": "tsc --noEmit",
     "generate-examples": "tsx scripts/generate-examples.ts",
     "process-diff": "tsx src/dev.ts",

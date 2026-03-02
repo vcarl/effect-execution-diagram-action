@@ -4,7 +4,9 @@
 
 - `npm run build` — compiles TypeScript and bundles into `dist/index.js` via ncc. **Must be run and committed** after any source changes for the GitHub Action to pick them up.
 - `npm run lint` — type-check only (`tsc --noEmit`)
-- `npm test` — runs vitest
+- `npm test` — runs vitest (unit tests only)
+- `npm run test:integration` — runs integration tests against real CLI (slow, ~120s timeout)
+- `npm run test:all` — runs unit then integration tests
 
 ## Dev workflow
 
