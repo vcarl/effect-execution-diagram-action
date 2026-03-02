@@ -19,3 +19,9 @@
 - `src/analysis/flow-analyzer.ts` — AST walker that finds pipe/gen/flatMap patterns and simple Effect declarations
 - `src/diagrams/flow-diagram.ts` — renders FlowGraph into Mermaid diagrams with recursive sub-program expansion
 - `dist/index.js` — **committed to git**, the bundled output that GitHub Actions actually runs
+
+## ZenUML
+
+- `docs/zenuml-reference.md` — syntax reference and notes on mapping Effect-TS constructs (gen functions, services, layers) to ZenUML sequence diagrams
+- ZenUML is a planned alternative render target alongside Mermaid flowcharts
+- Renders inside ` ```mermaid ` blocks via the `zenuml` directive (GitHub rendering support unconfirmed)

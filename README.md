@@ -10,13 +10,17 @@ When a PR is opened or updated, this action:
 2. Analyzes them for Effect-TS patterns
 3. Generates Mermaid diagrams and posts them as a PR comment
 
-Three diagram types are generated:
+Three diagram types are generated as Mermaid flowcharts:
 
 - **Execution Flow** — Visualizes `pipe` chains, `Effect.gen` yield steps, and `flatMap` sequences as flowcharts
 - **Layer Dependencies** — Shows which layers provide and require which services, with edges linking requirements to providers
 - **Error Channels** — Tracks how the error type parameter changes through `catchAll`, `catchTag`, `mapError`, and other error-handling combinators
 
-Diagrams are rendered natively by GitHub's Mermaid support inside collapsible `<details>` sections.
+A fourth diagram type is available for local development:
+
+- **Sequence Diagrams (ZenUML)** — Renders Effect-TS gen functions and pipe chains as sequence diagrams using the ZenUML notation inside Mermaid blocks. Service method calls, `Effect.all` concurrency, `Effect.forEach` loops, `Effect.fork`, cross-file sub-program expansion, and `try/catch` error handling are all mapped to ZenUML constructs. See `docs/zenuml-reference.md` for the full mapping.
+
+Flowchart diagrams are rendered natively by GitHub's Mermaid support inside collapsible `<details>` sections. ZenUML sequence diagrams work with mermaid-cli and VS Code extensions but may not render on GitHub (unconfirmed).
 
 ## Example output
 
@@ -138,7 +142,9 @@ The action uses two analysis strategies:
 
 Diagrams are capped at 100 nodes each to stay within GitHub's Mermaid rendering limits. If truncated, a note is included.
 
-## Development
+## Local development
+
+### Setup
 
 ```bash
 npm install
@@ -148,6 +154,64 @@ npm run build     # compile + bundle with ncc
 ```
 
 The bundled output in `dist/index.js` is committed to the repo (required for JavaScript GitHub Actions).
+
+### Dev CLI
+
+The project includes a local dev CLI (`src/dev.ts`) for running the analysis pipeline without GitHub. This is the primary way to iterate on diagram output.
+
+```bash
+npx tsx src/dev.ts [options] [files...]
+```
+
+**Options:**
+
+| Flag | Description |
+|---|---|
+| `--diff [ref]` | Analyze files changed vs a git ref (default: uncommitted changes) |
+| `--all` | Analyze all `.ts` files known to the tsconfig |
+| `--tsconfig PATH` | Path to `tsconfig.json` (default: `tsconfig.json`) |
+| `--json` | Output raw analysis JSON instead of diagrams |
+| `--no-flow` | Skip execution flow diagrams |
+| `--no-error` | Skip error channel diagrams |
+| `--sequence` | Include ZenUML sequence diagrams |
+| `--max-depth N` | Max depth for cross-file ref expansion (default: 3, 0 disables) |
+
+**Examples:**
+
+```bash
+# Analyze test fixtures — flowcharts + error diagrams (default)
+npx tsx src/dev.ts --all --tsconfig test/fixtures/tsconfig.json
+
+# Sequence diagrams only
+npx tsx src/dev.ts --all --no-flow --no-error --sequence --tsconfig test/fixtures/tsconfig.json
+
+# All diagram types together
+npx tsx src/dev.ts --all --sequence --tsconfig test/fixtures/tsconfig.json
+
+# Analyze specific files in your own project
+npx tsx src/dev.ts src/services/database.ts src/handlers/api.ts
+
+# Analyze your uncommitted changes
+npx tsx src/dev.ts --diff --sequence
+
+# Dump raw analysis JSON for debugging
+npx tsx src/dev.ts --all --json --tsconfig test/fixtures/tsconfig.json
+```
+
+### Rendering ZenUML diagrams locally
+
+The dev CLI outputs Mermaid code blocks. To render ZenUML sequence diagrams as images:
+
+```bash
+# Save output to a file
+npx tsx src/dev.ts --all --no-flow --no-error --sequence \
+  --tsconfig test/fixtures/tsconfig.json > output.md
+
+# Render a .mmd file with mermaid-cli
+npx @mermaid-js/mermaid-cli -i samples/gen-function.mmd -o samples/gen-function.svg
+```
+
+Validated ZenUML samples are in `samples/` — each `.mmd` file can be rendered independently with mermaid-cli. See `docs/zenuml-reference.md` for syntax details and the mapping between Effect-TS constructs and ZenUML.
 
 ## License
 

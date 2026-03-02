@@ -17,6 +17,7 @@ import { createProjectContext } from "./analysis/project-setup.js";
 import { analyze } from "./analysis/analyzer.js";
 import { renderFlowDiagrams } from "./diagrams/flow-diagram.js";
 import { renderErrorDiagrams } from "./diagrams/error-diagram.js";
+import { renderSequenceDiagrams } from "./diagrams/sequence-diagram.js";
 
 function usage(): never {
   console.log(`Usage: npx tsx src/dev.ts [options] [files...]
@@ -28,6 +29,7 @@ Options:
   --json            Output raw analysis JSON (skips diagram rendering)
   --no-flow         Skip execution flow diagram
   --no-error        Skip error channel diagram
+  --sequence        Include ZenUML sequence diagrams
   --max-depth N     Max depth for cross-file ref expansion (default: 3, 0 disables)
   -h, --help        Show this help
 
@@ -76,6 +78,7 @@ let files: string[] = [];
 let jsonOutput = false;
 let includeFlow = true;
 let includeError = true;
+let includeSequence = false;
 let maxDepth: number | undefined;
 let mode: "explicit" | "diff" | "all" = "explicit";
 let diffRef: string | undefined;
@@ -98,6 +101,8 @@ for (let i = 0; i < args.length; i++) {
     includeFlow = false;
   } else if (arg === "--no-error") {
     includeError = false;
+  } else if (arg === "--sequence") {
+    includeSequence = true;
   } else if (arg === "--max-depth") {
     maxDepth = parseInt(args[++i], 10);
   } else {
@@ -161,6 +166,17 @@ async function main() {
       }
     } else {
       console.log("### Error Channels\n\nNo error handling patterns found.\n");
+    }
+  }
+
+  if (includeSequence) {
+    const diagrams = renderSequenceDiagrams(result);
+    if (diagrams.length > 0) {
+      for (const diagram of diagrams) {
+        mermaidBlock(`Sequence: ${diagram.label}`, diagram.mermaid);
+      }
+    } else {
+      console.log("### Sequence Diagrams\n\nNo scopes found for sequence rendering.\n");
     }
   }
 }
