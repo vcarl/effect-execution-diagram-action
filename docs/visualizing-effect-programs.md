@@ -14,7 +14,7 @@ A one-line annotation might be more effective than any diagram for this:
 // processEvent: Effect<Updated, DbError, Database>
 ```
 
-Our current approach treats this as context — a title or comment on other diagrams rather than something to draw. That seems right so far, but there may be cases (complex union error types, deeply nested requirements) where a visual breakdown would help.
+Our current approach treats this as context — a title or comment on other diagrams rather than something to draw. That seems right so far, but there are cases (complex union error types, deeply nested requirements) where the pure-text label becomes too complex to be easily understood at a glance.
 
 ### 2. Sequential steps within a scope
 
