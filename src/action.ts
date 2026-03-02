@@ -4,8 +4,8 @@ import { getChangedFiles } from "./github/changed-files.js";
 import { upsertComment, formatComment, type DiagramSection } from "./github/comment.js";
 import { analyze } from "./analysis/analyzer.js";
 import { renderLayerDiagram } from "./diagrams/layer-diagram.js";
-import { renderFlowDiagram } from "./diagrams/flow-diagram.js";
-import { renderErrorDiagram } from "./diagrams/error-diagram.js";
+import { renderFlowDiagrams } from "./diagrams/flow-diagram.js";
+import { renderErrorDiagrams } from "./diagrams/error-diagram.js";
 
 export async function run(): Promise<void> {
   const token = core.getInput("github-token", { required: true });
@@ -42,10 +42,12 @@ export async function run(): Promise<void> {
   const sections: DiagramSection[] = [];
 
   if (includeFlow && result.nodes.length > 0) {
-    sections.push({
-      title: "Execution Flow",
-      ...renderFlowDiagram(result),
-    });
+    for (const diagram of renderFlowDiagrams(result)) {
+      sections.push({
+        title: `Execution Flow: ${diagram.label}`,
+        ...diagram,
+      });
+    }
   }
 
   if (includeLayer && result.layers.length > 0) {
@@ -56,10 +58,12 @@ export async function run(): Promise<void> {
   }
 
   if (includeError && result.nodes.some((n) => n.errorHandler)) {
-    sections.push({
-      title: "Error Channels",
-      ...renderErrorDiagram(result),
-    });
+    for (const diagram of renderErrorDiagrams(result)) {
+      sections.push({
+        title: `Error Channels: ${diagram.label}`,
+        ...diagram,
+      });
+    }
   }
 
   // 4. Post comment
