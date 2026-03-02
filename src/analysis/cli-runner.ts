@@ -48,7 +48,6 @@ export async function runOverview(
 export async function runLayerInfo(
   filePath: string,
   layerName: string,
-  tsconfigPath: string
 ): Promise<string> {
   const result = await runCli([
     "layerinfo",
@@ -56,8 +55,6 @@ export async function runLayerInfo(
     filePath,
     "--name",
     layerName,
-    "--project",
-    tsconfigPath,
   ]);
   return result.stdout;
 }
