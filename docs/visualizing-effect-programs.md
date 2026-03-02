@@ -1,6 +1,6 @@
 # Visualizing Effect Programs
 
-Effect-TS programs have a layered structure that doesn't map neatly onto a single diagram type. This document describes the levels of abstraction present in Effect code and which visual forms clarify each one, based on what we've learned building automated diagram renderers.
+Effect-TS programs have a layered structure that doesn't map neatly onto a single diagram type. This document is a working set of notes on the levels of abstraction present in Effect code and how different visual forms might clarify each one. It's based on early experiments building automated diagram renderers — the observations here are preliminary and the design space is largely unexplored.
 
 ## The levels
 
@@ -8,13 +8,13 @@ Effect-TS programs have a layered structure that doesn't map neatly onto a singl
 
 Every Effect value carries `Effect<A, E, R>` — success type, error type, and requirements. This is the densest summary available: it tells you what a computation produces, how it can fail, and what it needs from context to run.
 
-No diagram is needed here. A one-line annotation is better than any visual:
+A one-line annotation might be more effective than any diagram for this:
 
 ```
 // processEvent: Effect<Updated, DbError, Database>
 ```
 
-This line communicates more about the function's contract than most diagrams can. It belongs in every visualization as context — a title or comment — but trying to *draw* it adds clutter without insight.
+Our current approach treats this as context — a title or comment on other diagrams rather than something to draw. That seems right so far, but there may be cases (complex union error types, deeply nested requirements) where a visual breakdown would help.
 
 ### 2. Sequential steps within a scope
 
@@ -31,7 +31,7 @@ const processEvent = (event) =>
   });
 ```
 
-**Flowchart (top-to-bottom):** Each yield is a node, edges connect them sequentially. Good for seeing the shape of a function — how many steps, where it branches, how long it is. Type annotations on each node show how `A`, `E`, `R` evolve step by step.
+**Flowchart (top-to-bottom):** Each yield is a node, edges connect them sequentially. Shows the shape of a function — how many steps, where it branches, how long it is. Type annotations on each node show how `A`, `E`, `R` evolve step by step.
 
 ```
 [Database] → [db.query(...)] → [db.execute(...)] → [return]
@@ -46,19 +46,19 @@ Database.execute("UPDATE state SET payload = ...")
 return updated
 ```
 
-**Which works better:** Sequence diagrams, when services are involved. The flowchart treats `yield* Database` and `yield* db.query(...)` as equivalent nodes — just boxes in a chain. The sequence diagram eliminates the service-access yield entirely (it's implicit in calling `Database.query()`) and shows the caller→service relationship as a directional arrow. For pure pipe chains without services (like `Effect.succeed(42).pipe(Effect.map(...), Effect.flatMap(...))`), the flowchart is equally clear and the sequence diagram has no advantage.
+**Initial observations:** Sequence diagrams seem to have an advantage when services are involved. The flowchart treats `yield* Database` and `yield* db.query(...)` as equivalent nodes — just boxes in a chain. The sequence diagram eliminates the service-access yield entirely (it's implicit in calling `Database.query()`) and shows the caller→service relationship as a directional arrow. For pure pipe chains without services (like `Effect.succeed(42).pipe(Effect.map(...), Effect.flatMap(...))`), the flowchart seems equally clear. But we haven't tested this against many real-world codebases yet — there may be patterns where the tradeoff is different.
 
 ### 3. Service interactions
 
-Effect services (`Context.Tag`) are the primary abstraction boundary. A gen function yields a service to get a handle, then calls methods on it. The service is defined elsewhere — possibly in another file, backed by a different implementation per environment.
+Effect services (`Context.Tag`) are a primary abstraction boundary. A gen function yields a service to get a handle, then calls methods on it. The service is defined elsewhere — possibly in another file, backed by a different implementation per environment.
 
-The interesting question isn't "what steps does this function take" but "which services does it talk to, and what does it ask them to do?"
+One way to frame the question: it's not just "what steps does this function take" but "which services does it talk to, and what does it ask them to do?"
 
-**Flowchart:** Services show up as yield nodes. The fact that `Database` is a service — not just a variable — isn't visually distinct from any other yield. You can *read* the label and figure it out, but nothing in the diagram's structure communicates it.
+**Flowchart:** Services show up as yield nodes. The fact that `Database` is a service — not just a variable — isn't visually distinct from any other yield. You can *read* the label and figure it out, but the diagram's structure doesn't communicate it. There might be ways to improve this (different node shapes, colors, or grouping), but we haven't explored that yet.
 
-**Sequence diagram:** Services are *participants* — named columns that persist across the diagram. When a function calls `Database.query(...)`, an arrow goes from the caller to the Database column. Multiple calls to the same service stack vertically under the same column. This is the natural visual form for "who talks to whom."
+**Sequence diagram:** Services are *participants* — named columns that persist across the diagram. When a function calls `Database.query(...)`, an arrow goes from the caller to the Database column. Multiple calls to the same service stack vertically under the same column. This feels like a natural visual form for "who talks to whom," though the participant model breaks down for computations that don't involve services.
 
-**File grouping** adds another layer: when services come from different source files, `group` declarations organize participants by origin. This answers "where is this service defined?" at a glance.
+**File grouping** adds another layer: when services come from different source files, `group` declarations organize participants by origin.
 
 ```
 group "infrastructure.ts" {
@@ -72,6 +72,8 @@ Database.query("SELECT * FROM requests")
 StatePersister.persist(result)
 ```
 
+This is potentially useful for orientation — "where is this service defined?" — but it also reverses the arrow direction (grouped participants appear left of the starter) which might confuse readers. Needs more testing with real codebases to see if the tradeoff is worth it, and whether file-level grouping is the right granularity or if module/package-level would be better.
+
 ### 4. Error handling
 
 Effect tracks errors in the type system. Pipe steps like `catchTag`, `catchAll`, and `mapError` narrow or transform the error channel. This creates two kinds of information:
@@ -79,13 +81,13 @@ Effect tracks errors in the type system. Pipe steps like `catchTag`, `catchAll`,
 - **The error flow:** how the `E` type parameter changes through a chain. `Effect<User, HttpError | DbError, Env>` → `catchTag("DbError", ...)` → `Effect<User, HttpError, Env>`.
 - **The branching structure:** the happy path vs. recovery paths.
 
-**Error channel diagram (LR flowchart):** Specialized. Each node is a pipe step, each edge is labeled with the error type at that point. Diamond shapes for catch nodes, trapezoids for mapError. This is the best view for understanding error type narrowing — it strips away everything else and focuses on how `E` propagates.
+**Error channel diagram (LR flowchart):** A specialized view. Each node is a pipe step, each edge is labeled with the error type at that point. Diamond shapes for catch nodes, trapezoids for mapError. Strips away everything else and focuses on how `E` propagates.
 
 ```
 [fetchUser] --E: HttpError | DbError--> {catchTag} --E: HttpError--> {catchAll}
 ```
 
-**Sequence diagram `try/catch`:** Shows the structural branching — which steps are inside the try, which are recovery. Good for understanding "what happens when it fails" but doesn't track the type narrowing step by step.
+**Sequence diagram `try/catch`:** Shows the structural branching — which steps are inside the try, which are recovery.
 
 ```
 try {
@@ -96,15 +98,15 @@ try {
 }
 ```
 
-**Which works better:** They answer different questions. The error channel diagram answers "how does the error type change?" The try/catch answers "what's the happy path vs. the recovery path?" Both are useful. They're complementary, not competing.
+These seem to answer different questions. The error channel diagram answers "how does the error type change?" The try/catch answers "what's the happy path vs. the recovery path?" They may be complementary rather than competing, but we haven't explored whether they could be combined into a single view that does both.
 
 ### 5. Concurrency
 
 `Effect.all([...])` runs effects concurrently. `Effect.fork` creates a background fiber. `Effect.forEach` iterates with potential concurrency. These break the linear sequential model.
 
-**Flowchart:** Concurrency is invisible. `Effect.all([db.query(a), db.query(b)])` is a single node with a long label. The fact that these run in parallel is only apparent if you read the label and recognize the combinator. Forks and forEach show up as subgraphs (when combinator expansion is enabled), but the "parallel" aspect isn't structurally distinct from "sequential."
+**Flowchart:** In our current implementation, concurrency is mostly invisible. `Effect.all([db.query(a), db.query(b)])` is a single node with a long label. Forks and forEach show up as subgraphs (when combinator expansion is enabled), but the "parallel" aspect isn't structurally distinct from "sequential." There's room to explore here — parallel branches in the flowchart, or swimlanes, or some other structural cue.
 
-**Sequence diagram:** Concurrency has dedicated constructs. `par { }` visually groups concurrent operations in a labeled box. `forEach(collection) { }` is a loop box. `Effect.fork` assigns a fiber handle. These are first-class visual elements, not just labels on nodes.
+**Sequence diagram:** ZenUML has dedicated constructs for this. `par { }` visually groups concurrent operations in a labeled box. `forEach(collection) { }` is a loop box. `Effect.fork` assigns a fiber handle.
 
 ```
 par {
@@ -113,13 +115,13 @@ par {
 }
 ```
 
-**Which works better:** Sequence diagrams, clearly. Concurrency is a structural property that deserves structural representation. A `par` box communicates "these happen at the same time" instantly. A flowchart node labeled `Effect.all([...])` requires the reader to parse the label, recognize the combinator, and mentally model the concurrency.
+Early impression: having first-class visual constructs for concurrency seems better than encoding it in labels. But there are Effect concurrency patterns we haven't attempted yet — `Race`, `Deferred`, `Semaphore`, fiber supervision trees. These might not map as cleanly.
 
 ### 6. Cross-file composition
 
 Effect programs are typically split across files: services in one, handlers in another, layers in a third. When a gen function yields to another gen function defined in a different file, that's a sub-program call.
 
-**Flowchart:** Subgraphs. The referenced scope is expanded inline as a nested subgraph with a label showing the source file. This works well for showing the full expansion — you see every step of the sub-program. It gets wide with deep nesting.
+**Flowchart:** Subgraphs. The referenced scope is expanded inline as a nested subgraph with a label showing the source file.
 
 **Sequence diagram:** Nesting with `{ }` braces. The sub-program becomes a self-call (activation bar) containing its expanded steps. A comment notes the source file.
 
@@ -131,15 +133,13 @@ fetchUser() { // expanded from cross-file-b.ts
 }
 ```
 
-Both work similarly. The flowchart's subgraph is slightly better for complex expansions because it visually boxes the sub-program with a clear border. The sequence diagram's nesting is more compact and reads more like pseudocode.
-
-The real question is *depth*. How far should expansion go before the diagram becomes unreadable? Two levels is usually the practical limit for either format.
+Both approaches work for shallow expansion. Neither handles deep nesting well — flowcharts get wide, sequence diagrams get deeply indented. Two levels seems like a practical limit for either format, but we haven't rigorously tested this. There's also an open question about whether expansion should be the default or whether a collapsed reference (just showing the call, not its internals) would be more useful in most cases.
 
 ### 7. Layers and construction
 
 Layers are compile-time/startup-time wiring — they describe how services are constructed and what they depend on. `DatabaseLive` requires `AppConfig` and provides `Database`. This is a dependency graph, not an execution sequence.
 
-**Flowchart (the existing layer dependency diagram):** Subgraphs for each layer, "provides" and "requires" labels, dotted edges showing dependency relationships. Good for seeing the full dependency DAG.
+**Flowchart (the existing layer dependency diagram):** Subgraphs for each layer, "provides" and "requires" labels, dotted edges showing dependency relationships.
 
 **Sequence diagram (layer construction):** `Application` as the starter, calling `.build()` on each layer in dependency order. Requires/provides as comments, `return ServiceName` for the output. This answers "in what order are layers constructed?" rather than "what depends on what?"
 
@@ -156,33 +156,35 @@ DatabaseLive.build() {
 }
 ```
 
-**Which works better:** The dependency DAG (flowchart) is better for understanding the architecture. The sequence diagram is better for understanding the construction sequence. In practice the DAG is more useful — you rarely care about construction order, but you often care about "what does this layer need?"
+The dependency DAG might be more generally useful — you probably care about "what does this layer need?" more often than "in what order are layers constructed?" — but we're not sure yet. It likely depends on what problem the reader is trying to solve.
 
-## What we've learned
+## Early observations
 
-### Flowcharts are a lowest-common-denominator
+These are tentative takeaways from the first round of implementation. They might change as we test against more codebases and iterate on the design.
 
-Flowcharts can represent anything. Every node is a box, every relationship is an arrow. This universality is also their weakness — nothing is structurally distinguished. A service access, a computation step, a concurrent fork, and an error handler are all just boxes connected by arrows. The *labels* carry the meaning; the *structure* is always the same.
+### Flowcharts are a safe default, but generic
 
-This makes flowcharts good as a default and bad as a specialized view. They're the right choice when you have no better option, or when you want to show everything at once without committing to a particular interpretation.
+Flowcharts can represent anything. Every node is a box, every relationship is an arrow. This universality might also be a weakness — nothing is structurally distinguished. A service access, a computation step, a concurrent fork, and an error handler are all just boxes connected by arrows. The *labels* carry the meaning; the *structure* is the same throughout.
 
-### Sequence diagrams encode domain knowledge
+This makes flowcharts reasonable as a starting point. Whether they're sufficient or whether more specialized views always add value is an open question.
 
-Choosing to represent services as participants, concurrency as `par` blocks, and error handling as `try/catch` is an *interpretation* of the code. It says: "the interesting thing about this function is which services it talks to and in what order." That interpretation is usually right for Effect code — the service interaction pattern is the primary design concern — but it's an editorial choice that the flowchart doesn't make.
+### Sequence diagrams encode an interpretation
 
-When the interpretation fits, sequence diagrams communicate more per pixel than flowcharts. When it doesn't fit (pure pipe chains, schedule construction, simple value computations), they add participant columns that serve no purpose.
+Choosing to represent services as participants, concurrency as `par` blocks, and error handling as `try/catch` is an *interpretation* of the code. It says: "the interesting thing about this function is which services it talks to and in what order." That interpretation seems right for many Effect patterns — service interaction is a primary design concern — but it's an editorial choice.
 
-### Type annotations belong in context, not in structure
+When the interpretation fits (service-heavy gen functions), sequence diagrams seem to communicate more per pixel than flowcharts. When it doesn't fit (pure pipe chains, schedule construction, simple value computations), they might add ceremony without value. We need to see more examples to know where the line is.
 
-The `Effect<A, E, R>` type is essential context but it makes a terrible label. A node labeled `Effect.tryPromise(…)<br/>Effect<{ id: number; }[], DbError>` is hard to read in a flowchart. A sequence diagram comment `// processEvent: Effect<Updated, DbError, Database>` is easy to read.
+### Type annotations are awkward in diagrams
 
-The lesson: put type information where the eye expects summary text (titles, comments, tooltips), not where it competes with structural information (node labels, edge labels).
+The `Effect<A, E, R>` type is essential context but it makes a dense label. A node labeled `Effect.tryPromise(…)<br/>Effect<{ id: number; }[], DbError>` is hard to read in a flowchart. A sequence diagram comment `// processEvent: Effect<Updated, DbError, Database>` is easier.
 
-### Different questions need different diagrams
+Our current approach puts type information in titles and comments rather than in node labels or edge labels. This seems to work but might lose information that readers need step-by-step. There may be a middle ground — showing types on hover or in a separate panel, or only showing the type parameter that changed from the previous step.
 
-No single diagram type answers all questions about an Effect program:
+### Multiple targeted diagrams might beat one comprehensive one
 
-| Question | Best view |
+No single diagram type has answered all questions about an Effect program in our testing:
+
+| Question | Current best view |
 |---|---|
 | What steps does this function take? | Flowchart |
 | Which services does it talk to? | Sequence diagram |
@@ -192,12 +194,19 @@ No single diagram type answers all questions about an Effect program:
 | What's the construction order? | Layer sequence diagram |
 | What's the full expansion? | Flowchart with subgraphs |
 
-The most useful output is usually 2-3 targeted diagrams rather than one comprehensive one.
+Whether 2-3 targeted diagrams is actually better than one rich diagram is unproven — it's possible a well-designed combined view could do more. We haven't explored interactive or layered visualizations (e.g., click to expand, filter by concern) which might change the calculus entirely.
 
-### Suppression is as important as rendering
+### Suppression seems important
 
-The most impactful rendering decision in the sequence diagram is *not showing* the service access yield. `yield* Database` followed by `db.query(...)` becomes just `Database.query(...)`. One line instead of two, and the line that remains is the one that matters.
+One of the more effective rendering decisions in the sequence diagram has been *not showing* certain things. `yield* Database` followed by `db.query(...)` becomes just `Database.query(...)`. Suppressing `gen-start` nodes, collapsing combinator scopes inline, and using generic `return result` instead of complex type literals all reduce noise.
 
-Similarly, suppressing `gen-start` nodes (absorbing them into the `@Starter` declaration), collapsing combinator scopes (expanding them inline rather than as separate diagrams), and using generic `return result` instead of complex type literals all reduce noise.
+This is a form of editorial judgment that's hard to get right automatically. Our current heuristics work for the test fixtures but might suppress useful information in other codebases. It's worth exploring whether suppression should be configurable, or whether different levels of detail should be separate diagram modes.
 
-The best diagram is the one that leaves out everything the reader doesn't need.
+## Open questions
+
+- What patterns exist in real-world Effect codebases that our test fixtures don't cover? Layer merging, resource scoping (`acquireUseRelease`), Stream pipelines, STM transactions, etc.
+- Is there a useful visualization for the R (requirements) parameter specifically — showing how requirements accumulate through composition?
+- Could interactive diagrams (expand on click, filter by service, toggle type annotations) replace the need for multiple static diagram types?
+- How should the diagrams handle large programs — hundreds of nodes across dozens of files? Truncation? Summary views? Hierarchical drill-down?
+- Are there established visual conventions from other effect system communities (Haskell, Scala ZIO) that we should learn from?
+- Would color-coding by concern (service calls one color, error handling another, concurrency another) work in flowcharts to offset their structural genericity?
