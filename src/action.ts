@@ -2,11 +2,7 @@ import * as core from "@actions/core";
 import * as github from "@actions/github";
 import { getChangedFiles } from "./github/changed-files.js";
 import { upsertComment, formatComment, type DiagramSection } from "./github/comment.js";
-import { createProjectContext } from "./analysis/project-setup.js";
-import { analyzeOverview } from "./analysis/overview-parser.js";
-import { analyzeLayerInfo } from "./analysis/layerinfo-parser.js";
-import { analyzeFlows } from "./analysis/flow-analyzer.js";
-import { analyzeErrors } from "./analysis/error-analyzer.js";
+import { analyze } from "./analysis/analyzer.js";
 import { renderLayerDiagram } from "./diagrams/layer-diagram.js";
 import { renderFlowDiagram } from "./diagrams/flow-diagram.js";
 import { renderErrorDiagram } from "./diagrams/error-diagram.js";
@@ -38,66 +34,35 @@ export async function run(): Promise<void> {
     return;
   }
 
-  // 2. Set up TypeScript project context
-  const project = createProjectContext(tsconfigPath);
+  // 2. Run unified analysis
+  core.info("Running analysis...");
+  const result = await analyze(tsconfigPath, changedFiles);
 
-  // 3. Determine which analyses are needed
-  const needFlow = includeFlow;
-  const needLayer = includeLayer || includeFlow;
-  const needError = includeError;
-
-  // 4. Run analyses
-  let flowResults: ReturnType<typeof analyzeFlows> | undefined;
-  let overviewResults: Awaited<ReturnType<typeof analyzeOverview>> | undefined;
-  let layerResults: Awaited<ReturnType<typeof analyzeLayerInfo>> | undefined;
-  let errorResults: ReturnType<typeof analyzeErrors> | undefined;
-
-  if (needFlow) {
-    core.info("Analyzing execution flow...");
-    flowResults = analyzeFlows(project, changedFiles);
-  }
-
-  if (needLayer) {
-    core.info("Analyzing layer dependencies...");
-    overviewResults = await analyzeOverview(changedFiles, tsconfigPath);
-    if (overviewResults.layers.length > 0) {
-      layerResults = await analyzeLayerInfo(
-        overviewResults.layers,
-        tsconfigPath
-      );
-    }
-  }
-
-  if (needError) {
-    core.info("Analyzing error channels...");
-    errorResults = analyzeErrors(project, changedFiles);
-  }
-
-  // 5. Build diagram sections
+  // 3. Build diagram sections
   const sections: DiagramSection[] = [];
 
-  if (includeFlow && flowResults && flowResults.nodes.length > 0) {
+  if (includeFlow && result.nodes.length > 0) {
     sections.push({
       title: "Execution Flow",
-      ...renderFlowDiagram(flowResults, layerResults),
+      ...renderFlowDiagram(result),
     });
   }
 
-  if (includeLayer && layerResults) {
+  if (includeLayer && result.layers.length > 0) {
     sections.push({
       title: "Layer Dependencies",
-      ...renderLayerDiagram(layerResults),
+      ...renderLayerDiagram(result.layers),
     });
   }
 
-  if (includeError && errorResults && errorResults.chains.length > 0) {
+  if (includeError && result.nodes.some((n) => n.errorHandler)) {
     sections.push({
       title: "Error Channels",
-      ...renderErrorDiagram(errorResults),
+      ...renderErrorDiagram(result),
     });
   }
 
-  // 6. Post comment
+  // 4. Post comment
   if (sections.length === 0) {
     core.info("No Effect-TS patterns found in changed files, skipping comment.");
     return;

@@ -1,5 +1,4 @@
-import type { FlowGraph, FlowNode, FlowEdge } from "../analysis/flow-analyzer.js";
-import type { LayerAnalysisResult } from "../analysis/layerinfo-parser.js";
+import type { AnalysisResult, AnalysisNode, AnalysisEdge, LayerInfo } from "../analysis/analyzer.js";
 import { splitConnectedComponents } from "../analysis/graph-utils.js";
 import { escapeLabel, sanitizeId, truncateIfNeeded } from "./mermaid.js";
 
@@ -18,15 +17,14 @@ export interface FlowDiagramResult {
  * nested references (with cycle prevention).
  */
 export function renderFlowDiagrams(
-  graph: FlowGraph,
-  layers?: LayerAnalysisResult,
+  analysis: AnalysisResult,
 ): FlowDiagramResult[] {
-  const components = splitConnectedComponents(graph);
+  const components = splitConnectedComponents(analysis);
   const results: FlowDiagramResult[] = [];
 
   // Build scope name → component map for sub-program lookup
   // Include single-node components so simple Effect declarations can be inlined
-  const scopeMap = new Map<string, { nodes: FlowNode[]; edges: FlowEdge[] }>();
+  const scopeMap = new Map<string, { nodes: AnalysisNode[]; edges: AnalysisEdge[] }>();
   for (const comp of components) {
     const scope = comp.nodes[0]?.scope;
     if (scope && !scopeMap.has(scope)) {
@@ -102,11 +100,11 @@ export function renderFlowDiagrams(
     }
 
     // Render layer nodes + dotted edges when layer data is available
-    if (layers) {
+    if (analysis.layers.length > 0) {
       const wrapperId = isGenFlow
         ? sanitizeId(`wrapper_${parentScope}`)
         : undefined;
-      renderLayerEdges(comp.nodes, layers, wrapperId, lines);
+      renderLayerEdges(comp.nodes, analysis.layers, wrapperId, lines);
     }
 
     results.push({
@@ -130,9 +128,9 @@ export function renderFlowDiagrams(
  * (subgraph IDs), so the caller can redirect edges.
  */
 function renderComponentNodes(
-  nodes: FlowNode[],
-  edges: FlowEdge[],
-  scopeMap: Map<string, { nodes: FlowNode[]; edges: FlowEdge[] }>,
+  nodes: AnalysisNode[],
+  edges: AnalysisEdge[],
+  scopeMap: Map<string, { nodes: AnalysisNode[]; edges: AnalysisEdge[] }>,
   sgPrefix: string,
   nodePrefix: string,
   indent: string,
@@ -208,10 +206,9 @@ function renderComponentNodes(
 
 /** Convenience wrapper that returns the first diagram result (for single-diagram callers). */
 export function renderFlowDiagram(
-  graph: FlowGraph,
-  layers?: LayerAnalysisResult,
+  analysis: AnalysisResult,
 ): FlowDiagramResult {
-  const results = renderFlowDiagrams(graph, layers);
+  const results = renderFlowDiagrams(analysis);
   return results[0] ?? { label: "", mermaid: "flowchart TD" };
 }
 
@@ -223,7 +220,7 @@ export function renderFlowDiagram(
  * - E or R non-trivial but A trivial → show A as `_`, e.g. `Effect<_, HttpError, UserRepo>`
  * - All non-trivial → `Effect<A, E, R>`
  */
-function buildEffectAnnotation(node: FlowNode): string | undefined {
+function buildEffectAnnotation(node: AnalysisNode): string | undefined {
   const a = node.successType;
   const e = node.errorType;
   const r = node.requirements;
@@ -240,7 +237,7 @@ function buildEffectAnnotation(node: FlowNode): string | undefined {
   return `Effect&lt;${escapeLabel(a!)}, ${escapeLabel(e!)}, ${escapeLabel(r!)}&gt;`;
 }
 
-function buildLabel(node: FlowNode): string {
+function buildLabel(node: AnalysisNode): string {
   const main = escapeLabel(node.label);
   const parts = [main];
   if (node.description) {
@@ -258,8 +255,8 @@ function buildLabel(node: FlowNode): string {
  * and render trapezoid layer nodes with dotted edges.
  */
 function renderLayerEdges(
-  nodes: FlowNode[],
-  layers: LayerAnalysisResult,
+  nodes: AnalysisNode[],
+  layers: LayerInfo[],
   wrapperId: string | undefined,
   lines: string[],
 ): void {
@@ -277,7 +274,7 @@ function renderLayerEdges(
 
   // Build a map of service name → layer for quick lookup
   const serviceToLayer = new Map<string, { name: string }>();
-  for (const layer of layers.layers) {
+  for (const layer of layers) {
     for (const svc of layer.provides) {
       serviceToLayer.set(svc, layer);
     }
@@ -307,7 +304,7 @@ function renderLayerEdges(
   }
 }
 
-function shapeFor(node: FlowNode): string {
+function shapeFor(node: AnalysisNode): string {
   const label = buildLabel(node);
   switch (node.kind) {
     case "gen-start":

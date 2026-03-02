@@ -10,9 +10,7 @@ import * as http from "node:http";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import * as os from "node:os";
-import { createProjectContext } from "./analysis/project-setup.js";
-import { analyzeFlows } from "./analysis/flow-analyzer.js";
-import { analyzeErrors } from "./analysis/error-analyzer.js";
+import { analyze as runAnalysis } from "./analysis/analyzer.js";
 import { renderFlowDiagrams } from "./diagrams/flow-diagram.js";
 import { renderErrorDiagrams } from "./diagrams/error-diagram.js";
 
@@ -189,34 +187,27 @@ async function analyze(req: AnalyzeRequest): Promise<AnalyzeResponse> {
       "utf-8"
     );
 
-    // 4. Run analysis
-    const project = createProjectContext(tsconfigPath);
-
-    const flowResult = analyzeFlows(project, writtenPaths);
-    const errorResult = analyzeErrors(project, writtenPaths);
+    // 4. Run unified analysis
+    const result = await runAnalysis(tsconfigPath, writtenPaths);
 
     // Post-process: replace temp dir paths with relative repo paths
     const pathMap = new Map<string, string>();
     for (let i = 0; i < writtenPaths.length; i++) {
       pathMap.set(writtenPaths[i], changedFiles[i]);
     }
-    for (const node of flowResult.nodes) {
+    for (const node of result.nodes) {
       node.file = pathMap.get(node.file) ?? node.file;
-    }
-    for (const chain of errorResult.chains) {
-      for (const step of chain.steps) {
-        step.file = pathMap.get(step.file) ?? step.file;
-      }
     }
 
     const response: AnalyzeResponse = { files: changedFiles };
 
-    if (flowResult.nodes.length > 0) {
-      response.flows = renderFlowDiagrams(flowResult);
+    if (result.nodes.length > 0) {
+      response.flows = renderFlowDiagrams(result);
     }
 
-    if (errorResult.chains.length > 0) {
-      response.errors = renderErrorDiagrams(errorResult);
+    const hasErrorHandlers = result.nodes.some((n) => n.errorHandler);
+    if (hasErrorHandlers) {
+      response.errors = renderErrorDiagrams(result);
     }
 
     return response;

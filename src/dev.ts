@@ -14,8 +14,7 @@
 import * as path from "node:path";
 import { execSync } from "node:child_process";
 import { createProjectContext } from "./analysis/project-setup.js";
-import { analyzeFlows } from "./analysis/flow-analyzer.js";
-import { analyzeErrors } from "./analysis/error-analyzer.js";
+import { analyze } from "./analysis/analyzer.js";
 import { renderFlowDiagrams } from "./diagrams/flow-diagram.js";
 import { renderErrorDiagrams } from "./diagrams/error-diagram.js";
 
@@ -119,29 +118,34 @@ for (const f of files) {
 console.log();
 
 // --- Run analysis ---
-const project = createProjectContext(tsconfigPath);
+async function main() {
+  const result = await analyze(tsconfigPath, files);
 
-const flowResult = includeFlow ? analyzeFlows(project, files) : undefined;
-const errorResult = includeError ? analyzeErrors(project, files) : undefined;
-
-if (includeFlow) {
-  if (flowResult && flowResult.nodes.length > 0) {
-    const diagrams = renderFlowDiagrams(flowResult);
-    for (const diagram of diagrams) {
-      mermaidBlock(`Execution Flow: ${diagram.label}`, diagram.mermaid);
+  if (includeFlow) {
+    if (result.nodes.length > 0) {
+      const diagrams = renderFlowDiagrams(result);
+      for (const diagram of diagrams) {
+        mermaidBlock(`Execution Flow: ${diagram.label}`, diagram.mermaid);
+      }
+    } else {
+      console.log("### Execution Flow\n\nNo pipe/gen/flatMap patterns found.\n");
     }
-  } else {
-    console.log("### Execution Flow\n\nNo pipe/gen/flatMap patterns found.\n");
+  }
+
+  if (includeError) {
+    const hasErrorHandlers = result.nodes.some((n) => n.errorHandler);
+    if (hasErrorHandlers) {
+      const diagrams = renderErrorDiagrams(result);
+      for (const diagram of diagrams) {
+        mermaidBlock(`Error Channels: ${diagram.label}`, diagram.mermaid);
+      }
+    } else {
+      console.log("### Error Channels\n\nNo error handling patterns found.\n");
+    }
   }
 }
 
-if (includeError) {
-  if (errorResult && errorResult.chains.length > 0) {
-    const diagrams = renderErrorDiagrams(errorResult);
-    for (const diagram of diagrams) {
-      mermaidBlock(`Error Channels: ${diagram.label}`, diagram.mermaid);
-    }
-  } else {
-    console.log("### Error Channels\n\nNo error handling patterns found.\n");
-  }
-}
+main().catch((err) => {
+  console.error(err);
+  process.exit(1);
+});

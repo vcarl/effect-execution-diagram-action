@@ -1,4 +1,4 @@
-import type { LayerAnalysisResult, LayerDependency } from "../analysis/layerinfo-parser.js";
+import type { LayerInfo } from "../analysis/analyzer.js";
 import { escapeLabel, sanitizeId, truncateIfNeeded } from "./mermaid.js";
 
 export interface LayerDiagramResult {
@@ -9,21 +9,21 @@ export interface LayerDiagramResult {
 }
 
 export function renderLayerDiagram(
-  analysis: LayerAnalysisResult
+  layers: LayerInfo[],
 ): LayerDiagramResult {
-  const { items: layers, info } = truncateIfNeeded(analysis.layers);
+  const { items: visibleLayers, info } = truncateIfNeeded(layers);
 
   const lines: string[] = ["flowchart TB"];
 
   // Build a map of service -> providing layer for edge linking
   const serviceProviders = new Map<string, string>();
-  for (const layer of layers) {
+  for (const layer of visibleLayers) {
     for (const svc of layer.provides) {
       serviceProviders.set(svc, layer.name);
     }
   }
 
-  for (const layer of layers) {
+  for (const layer of visibleLayers) {
     const layerId = sanitizeId(layer.name);
     lines.push(`  subgraph ${layerId} ["${escapeLabel(layer.name)}"]`);
 
@@ -38,7 +38,7 @@ export function renderLayerDiagram(
   }
 
   // Draw dependency edges: required service -> providing layer
-  for (const layer of layers) {
+  for (const layer of visibleLayers) {
     const layerId = sanitizeId(layer.name);
     for (const req of layer.requires) {
       const provider = serviceProviders.get(req);
