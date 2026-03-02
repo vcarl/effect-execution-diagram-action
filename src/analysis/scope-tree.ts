@@ -1,5 +1,5 @@
 import * as path from "node:path";
-import type { AnalysisResult, AnalysisNode } from "./analyzer.js";
+import type { AnalysisResult, AnalysisNode, LayerInfo } from "./analyzer.js";
 import { sanitizeId } from "../diagrams/mermaid.js";
 
 // ---------------------------------------------------------------------------
@@ -119,6 +119,31 @@ export function buildScopeTree(result: AnalysisResult): ScopeTree {
     });
   }
 
+  // Create synthetic scope nodes for layers not already in the scope tree.
+  // These come from patterns like Layer.succeed() that the AST walker doesn't
+  // recognize, but the CLI overview still discovers.
+  for (const layer of result.layers) {
+    if (scopeIdMap.has(layer.name)) continue;
+    // Skip garbage entries from CLI parser (e.g. "Tip: ..." lines)
+    if (layer.provides.length === 0 && layer.requires.length === 0) continue;
+
+    const id = sanitizeId(`scope_${layer.name}`);
+    scopeIdMap.set(layer.name, id);
+
+    const file = path.resolve(layer.file);
+
+    scopes.push({
+      id,
+      name: layer.name,
+      file,
+      line: 0,
+      scopeType: "layer",
+      ...(buildLayerSignature(layer) ? { signature: buildLayerSignature(layer)! } : {}),
+      refs: [],
+      nodeCount: 0,
+    });
+  }
+
   // 2. Build edges from refs
   const edges: ScopeEdge[] = [];
   for (const scope of scopes) {
@@ -161,7 +186,23 @@ function determineScopeType(
 
   const kinds = new Set(nodes.map(n => n.kind));
   if (kinds.has("gen-start")) return "gen";
-  if (kinds.has("pipe-step")) return "pipe";
+
+  // Detect gen wrapped in pipe: pipe(Effect.gen(...), catchTag(...))
+  // The analyzer summarizes the initial expression as "Effect.gen(…)"
+  if (kinds.has("pipe-step")) {
+    const effectEntry = nodes.find(n => n.kind === "effect" && n.label.startsWith("Effect.gen"));
+    if (effectEntry) return "gen";
+
+    // Also check synthetic child scopes for gen-start
+    for (const node of result.nodes) {
+      if (node.scope?.startsWith(scopeName + "$") && node.kind === "gen-start") {
+        return "gen";
+      }
+    }
+
+    return "pipe";
+  }
+
   return "effect";
 }
 
@@ -184,6 +225,14 @@ function extractSignature(
 
 function findRefSourceNode(nodes: AnalysisNode[], ref: string): AnalysisNode | undefined {
   return nodes.find(n => n.ref === ref);
+}
+
+function buildLayerSignature(layer: LayerInfo): ScopeNode["signature"] | undefined {
+  if (layer.provides.length === 0 && layer.requires.length === 0) return undefined;
+  const sig: NonNullable<ScopeNode["signature"]> = {};
+  if (layer.provides.length > 0) sig.success = layer.provides.join(" | ");
+  if (layer.requires.length > 0) sig.requirements = layer.requires;
+  return sig;
 }
 
 function resolveTargetId(

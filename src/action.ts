@@ -1,11 +1,10 @@
 import * as core from "@actions/core";
 import * as github from "@actions/github";
 import { getChangedFiles } from "./github/changed-files.js";
-import { upsertComment, formatComment, type DiagramSection } from "./github/comment.js";
+import { upsertComment, formatComment } from "./github/comment.js";
 import { analyze } from "./analysis/analyzer.js";
-import { renderLayerDiagram } from "./diagrams/layer-diagram.js";
-import { renderFlowDiagrams } from "./diagrams/flow-diagram.js";
-import { renderErrorDiagrams } from "./diagrams/error-diagram.js";
+import { buildScopeTree } from "./analysis/scope-tree.js";
+import { applyLenses, defaultLenses, type LensOverrides } from "./diagrams/lens.js";
 
 export async function run(): Promise<void> {
   const token = core.getInput("github-token", { required: true });
@@ -38,33 +37,16 @@ export async function run(): Promise<void> {
   core.info("Running analysis...");
   const result = await analyze(tsconfigPath, changedFiles);
 
-  // 3. Build diagram sections
-  const sections: DiagramSection[] = [];
+  // 3. Build diagram sections via lens pipeline
+  const scopeTree = buildScopeTree(result);
+  const ctx = { analysis: result, scopeTree };
 
-  if (includeFlow && result.nodes.length > 0) {
-    for (const diagram of renderFlowDiagrams(result)) {
-      sections.push({
-        title: `Execution Flow: ${diagram.label}`,
-        ...diagram,
-      });
-    }
-  }
+  const overrides: LensOverrides = {};
+  if (!includeFlow) overrides.flow = false;
+  if (!includeLayer) overrides.layer = false;
+  if (!includeError) overrides.error = false;
 
-  if (includeLayer && result.layers.length > 0) {
-    sections.push({
-      title: "Layer Dependencies",
-      ...renderLayerDiagram(result.layers),
-    });
-  }
-
-  if (includeError && result.nodes.some((n) => n.errorHandler)) {
-    for (const diagram of renderErrorDiagrams(result)) {
-      sections.push({
-        title: `Error Channels: ${diagram.label}`,
-        ...diagram,
-      });
-    }
-  }
+  const sections = applyLenses(ctx, defaultLenses, overrides);
 
   // 4. Post comment
   if (sections.length === 0) {

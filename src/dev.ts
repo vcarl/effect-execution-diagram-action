@@ -15,11 +15,8 @@ import * as path from "node:path";
 import { execSync } from "node:child_process";
 import { createProjectContext } from "./analysis/project-setup.js";
 import { analyze } from "./analysis/analyzer.js";
-import { renderFlowDiagrams } from "./diagrams/flow-diagram.js";
-import { renderErrorDiagrams } from "./diagrams/error-diagram.js";
-import { renderSequenceDiagrams } from "./diagrams/sequence-diagram.js";
 import { buildScopeTree } from "./analysis/scope-tree.js";
-import { renderOverviewDiagram } from "./diagrams/overview-diagram.js";
+import { applyLenses, defaultLenses, type LensOverrides } from "./diagrams/lens.js";
 
 function usage(): never {
   console.log(`Usage: npx tsx src/dev.ts [options] [files...]
@@ -152,50 +149,25 @@ async function main() {
     return;
   }
 
-  if (includeOverview) {
-    const tree = buildScopeTree(result);
-    if (tree.scopes.length > 0) {
-      mermaidBlock("Overview", renderOverviewDiagram(tree));
-    } else {
-      console.log("### Overview\n\nNo scopes found for overview.\n");
-    }
+  const scopeTree = buildScopeTree(result);
+  const ctx = { analysis: result, scopeTree };
+
+  const overrides: LensOverrides = {};
+  if (includeOverview) overrides.overview = true;
+  if (args.includes("--no-overview")) overrides.overview = false;
+  if (!includeFlow) overrides.flow = false;
+  if (!includeError) overrides.error = false;
+  if (includeSequence) overrides.sequence = true;
+
+  const sections = applyLenses(ctx, defaultLenses, overrides);
+
+  if (sections.length === 0) {
+    console.log("No diagrams generated.\n");
+    return;
   }
 
-  if (includeFlow) {
-    if (result.nodes.length > 0) {
-      const diagrams = renderFlowDiagrams(result);
-      for (const diagram of diagrams) {
-        mermaidBlock(`Execution Flow: ${diagram.label}`, diagram.mermaid);
-      }
-      if (diagrams.length === 0) {
-        console.log("### Execution Flow\n\nNo pipe/gen/flatMap patterns found.\n");
-      }
-    } else {
-      console.log("### Execution Flow\n\nNo pipe/gen/flatMap patterns found.\n");
-    }
-  }
-
-  if (includeError) {
-    const hasErrorHandlers = result.nodes.some((n) => n.errorHandler);
-    if (hasErrorHandlers) {
-      const diagrams = renderErrorDiagrams(result);
-      for (const diagram of diagrams) {
-        mermaidBlock(`Error Channels: ${diagram.label}`, diagram.mermaid);
-      }
-    } else {
-      console.log("### Error Channels\n\nNo error handling patterns found.\n");
-    }
-  }
-
-  if (includeSequence) {
-    const diagrams = renderSequenceDiagrams(result);
-    if (diagrams.length > 0) {
-      for (const diagram of diagrams) {
-        mermaidBlock(`Sequence: ${diagram.label}`, diagram.mermaid);
-      }
-    } else {
-      console.log("### Sequence Diagrams\n\nNo scopes found for sequence rendering.\n");
-    }
+  for (const section of sections) {
+    mermaidBlock(section.title, section.mermaid);
   }
 }
 
