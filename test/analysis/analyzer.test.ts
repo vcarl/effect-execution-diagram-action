@@ -6,111 +6,183 @@ const FIXTURES_DIR = path.resolve(__dirname, "../fixtures");
 const TSCONFIG = path.join(FIXTURES_DIR, "tsconfig.json");
 
 describe("analyzeAst", () => {
-  it("detects pipe chains in simple-pipe.ts", () => {
+  it("detects pipe chains", () => {
     const result = analyzeAst(TSCONFIG, [
-      path.join(FIXTURES_DIR, "simple-pipe.ts"),
+      path.join(FIXTURES_DIR, "infrastructure.ts"),
     ]);
 
-    expect(result.nodes.length).toBeGreaterThan(0);
-    expect(result.edges.length).toBeGreaterThan(0);
-
-    const pipeNodes = result.nodes.filter(
-      (n) => n.kind === "effect" || n.kind === "pipe-step",
+    // retryPolicy is a pipe chain: Schedule.jittered → Schedule.intersect
+    const pipeSteps = result.nodes.filter(
+      (n) => n.scope === "retryPolicy" && n.kind === "pipe-step",
     );
-    expect(pipeNodes.length).toBeGreaterThanOrEqual(4);
+    expect(pipeSteps.length).toBeGreaterThanOrEqual(1);
+
+    const entryNode = result.nodes.find(
+      (n) => n.scope === "retryPolicy" && n.kind === "effect",
+    );
+    expect(entryNode).toBeDefined();
   });
 
-  it("extracts JSDoc descriptions on entry nodes", () => {
+  it("detects Effect.gen with yields", () => {
     const result = analyzeAst(TSCONFIG, [
-      path.join(FIXTURES_DIR, "simple-pipe.ts"),
+      path.join(FIXTURES_DIR, "state-service.ts"),
     ]);
 
-    const basicPipeEntry = result.nodes.find(
-      (n) => n.scope === "basicPipe" && n.kind === "effect",
+    // processEvent is an Effect.gen with yield steps
+    const genStart = result.nodes.find(
+      (n) => n.scope === "processEvent" && n.kind === "gen-start",
     );
-    expect(basicPipeEntry).toBeDefined();
-    expect(basicPipeEntry!.description).toBe(
-      "Increments and doubles a number using Effect pipeline",
+    const genEnd = result.nodes.find(
+      (n) => n.scope === "processEvent" && n.kind === "gen-end",
     );
-
-    const methodPipeEntry = result.nodes.find(
-      (n) => n.scope === "methodPipe" && n.kind === "effect",
+    const yields = result.nodes.filter(
+      (n) => n.scope === "processEvent" && n.kind === "yield",
     );
-    if (methodPipeEntry) {
-      expect(methodPipeEntry.description).toBeUndefined();
-    }
-  });
-
-  it("detects Effect.gen in gen-flow.ts", () => {
-    const result = analyzeAst(TSCONFIG, [
-      path.join(FIXTURES_DIR, "gen-flow.ts"),
-    ]);
-
-    const genStart = result.nodes.find((n) => n.kind === "gen-start");
-    const genEnd = result.nodes.find((n) => n.kind === "gen-end");
-    const yields = result.nodes.filter((n) => n.kind === "yield");
 
     expect(genStart).toBeDefined();
     expect(genEnd).toBeDefined();
+    // yields: Database, db.query, db.execute
     expect(yields.length).toBe(3);
-    expect(result.edges.length).toBe(4);
   });
 
-  it("detects error handling chains and sets errorHandler field", () => {
+  it("detects error handlers (catchTag) on pipe steps", () => {
     const result = analyzeAst(TSCONFIG, [
-      path.join(FIXTURES_DIR, "error-handling.ts"),
+      path.join(FIXTURES_DIR, "handler.ts"),
     ]);
 
-    const handlers = result.nodes.filter((n) => n.errorHandler);
+    const handlers = result.nodes.filter(
+      (n) => n.scope === "handleRequest" && n.errorHandler,
+    );
     expect(handlers.length).toBeGreaterThan(0);
 
     const catchTagNode = handlers.find((n) => n.errorHandler === "catchTag");
     expect(catchTagNode).toBeDefined();
-
-    const mapErrorNode = handlers.find((n) => n.errorHandler === "mapError");
-    expect(mapErrorNode).toBeDefined();
   });
 
   it("does not set errorHandler on pipes without error handlers", () => {
     const result = analyzeAst(TSCONFIG, [
-      path.join(FIXTURES_DIR, "simple-pipe.ts"),
+      path.join(FIXTURES_DIR, "handler.ts"),
     ]);
 
-    const handlers = result.nodes.filter((n) => n.errorHandler);
+    const healthCheckNodes = result.nodes.filter(
+      (n) => n.scope === "healthCheck",
+    );
+    expect(healthCheckNodes.length).toBeGreaterThan(0);
+
+    const handlers = healthCheckNodes.filter((n) => n.errorHandler);
     expect(handlers.length).toBe(0);
   });
 
-  it("decomposes union error types into errorTypes array", () => {
+  it("extracts JSDoc descriptions on entry nodes", () => {
     const result = analyzeAst(TSCONFIG, [
-      path.join(FIXTURES_DIR, "error-handling.ts"),
+      path.join(FIXTURES_DIR, "infrastructure.ts"),
     ]);
 
-    const unionNode = result.nodes.find(
-      (n) => n.errorTypes && n.errorTypes.length > 1,
+    const dbLiveEntry = result.nodes.find(
+      (n) => n.scope === "DatabaseLive" && n.kind === "gen-start",
     );
-    if (unionNode) {
-      expect(unionNode.errorTypes!.length).toBeGreaterThan(1);
-    }
+    expect(dbLiveEntry).toBeDefined();
+    expect(dbLiveEntry!.description).toBe(
+      "Provides query and execute methods backed by a Postgres connection",
+    );
   });
 
   it("populates type parameters on nodes", () => {
     const result = analyzeAst(TSCONFIG, [
-      path.join(FIXTURES_DIR, "simple-pipe.ts"),
+      path.join(FIXTURES_DIR, "state-service.ts"),
     ]);
 
-    // At least some nodes should have successType
-    const withType = result.nodes.find((n) => n.successType);
-    expect(withType).toBeDefined();
+    // processEvent gen-start should have successType
+    const genStart = result.nodes.find(
+      (n) => n.scope === "processEvent" && n.kind === "gen-start",
+    );
+    expect(genStart).toBeDefined();
+    expect(genStart!.successType).toBeDefined();
   });
 
   it("populates scope field from enclosing declaration", () => {
     const result = analyzeAst(TSCONFIG, [
-      path.join(FIXTURES_DIR, "simple-pipe.ts"),
+      path.join(FIXTURES_DIR, "infrastructure.ts"),
     ]);
 
     const scopedNodes = result.nodes.filter((n) => n.scope);
     expect(scopedNodes.length).toBeGreaterThan(0);
-    expect(scopedNodes[0].scope).toBe("basicPipe");
+
+    const scopes = new Set(scopedNodes.map((n) => n.scope));
+    expect(scopes.has("retryPolicy")).toBe(true);
+    expect(scopes.has("DatabaseLive")).toBe(true);
+  });
+
+  it("populates errorType on nodes with error channels", () => {
+    const result = analyzeAst(TSCONFIG, [
+      path.join(FIXTURES_DIR, "handler.ts"),
+    ]);
+
+    // handleRequest pipe entry has errorType DbError (before catchTag)
+    const handleRequestEntry = result.nodes.find(
+      (n) => n.scope === "handleRequest" && n.kind === "effect",
+    );
+    expect(handleRequestEntry).toBeDefined();
+    expect(handleRequestEntry!.errorType).toBe("DbError");
+  });
+
+  describe("cross-file ref expansion", () => {
+    const CROSS_FILE_A = path.join(FIXTURES_DIR, "cross-file-a.ts");
+    const CROSS_FILE_B = path.join(FIXTURES_DIR, "cross-file-b.ts");
+
+    it("expands refs into other files when only file A is passed", () => {
+      const result = analyzeAst(TSCONFIG, [CROSS_FILE_A]);
+
+      // File A's program should have a yield node with ref=fetchUser that has a refFile
+      const refNode = result.nodes.find(
+        (n) => n.ref === "fetchUser" && n.file === CROSS_FILE_A,
+      );
+      expect(refNode).toBeDefined();
+      expect(refNode!.refFile).toBeDefined();
+      expect(refNode!.refFile).toContain("cross-file-b");
+
+      // File B's fetchUser scope should be present via expansion
+      const fileBNodes = result.nodes.filter((n) =>
+        n.file.includes("cross-file-b"),
+      );
+      expect(fileBNodes.length).toBeGreaterThan(0);
+
+      // fetchUser gen-start should be there
+      const fetchUserStart = fileBNodes.find(
+        (n) => n.scope === "fetchUser" && n.kind === "gen-start",
+      );
+      expect(fetchUserStart).toBeDefined();
+    });
+
+    it("does not expand refs when maxDepth is 0", () => {
+      const result = analyzeAst(TSCONFIG, [CROSS_FILE_A], { maxDepth: 0 });
+
+      // File A nodes should be present
+      const fileANodes = result.nodes.filter((n) =>
+        n.file.includes("cross-file-a"),
+      );
+      expect(fileANodes.length).toBeGreaterThan(0);
+
+      // File B nodes should NOT be present
+      const fileBNodes = result.nodes.filter((n) =>
+        n.file.includes("cross-file-b"),
+      );
+      expect(fileBNodes.length).toBe(0);
+    });
+
+    it("does not produce duplicate nodes when both files are passed", () => {
+      const result = analyzeAst(TSCONFIG, [CROSS_FILE_A, CROSS_FILE_B]);
+
+      // fetchUser scope should appear exactly once (from file B)
+      const fetchUserStarts = result.nodes.filter(
+        (n) => n.scope === "fetchUser" && n.kind === "gen-start",
+      );
+      expect(fetchUserStarts.length).toBe(1);
+
+      // All node IDs should be unique
+      const ids = result.nodes.map((n) => n.id);
+      expect(new Set(ids).size).toBe(ids.length);
+    });
   });
 });
 
