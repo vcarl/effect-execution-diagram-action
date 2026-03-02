@@ -41,10 +41,12 @@ export function renderErrorDiagrams(
     for (const edge of comp.edges) {
       const from = sanitizeId(edge.from);
       const to = sanitizeId(edge.to);
-      // Derive error label from source node's errorType
+      // Derive error label from source node's errorTypes (decomposed) or errorType
       const sourceNode = comp.nodes.find((n) => n.id === edge.from);
-      const errorType = sourceNode?.errorType ?? "unknown";
-      const errorLabel = escapeLabel(errorType);
+      const errorTypes = sourceNode?.errorTypes;
+      const errorLabel = errorTypes && errorTypes.length > 1
+        ? errorTypes.map(t => escapeLabel(t)).join(", ")
+        : escapeLabel(sourceNode?.errorType ?? "unknown");
       lines.push(`  ${from} -->|"E: ${errorLabel}"| ${to}`);
     }
 
