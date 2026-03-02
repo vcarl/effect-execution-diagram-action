@@ -18,6 +18,8 @@ import { analyze } from "./analysis/analyzer.js";
 import { renderFlowDiagrams } from "./diagrams/flow-diagram.js";
 import { renderErrorDiagrams } from "./diagrams/error-diagram.js";
 import { renderSequenceDiagrams } from "./diagrams/sequence-diagram.js";
+import { buildScopeTree } from "./analysis/scope-tree.js";
+import { renderOverviewDiagram } from "./diagrams/overview-diagram.js";
 
 function usage(): never {
   console.log(`Usage: npx tsx src/dev.ts [options] [files...]
@@ -27,6 +29,8 @@ Options:
   --all             Analyze all .ts files in the project
   --tsconfig PATH   Path to tsconfig.json (default: tsconfig.json)
   --json            Output raw analysis JSON (skips diagram rendering)
+  --overview        Include scope overview diagram
+  --no-overview     Suppress scope overview diagram
   --no-flow         Skip execution flow diagram
   --no-error        Skip error channel diagram
   --sequence        Include ZenUML sequence diagrams
@@ -79,6 +83,7 @@ let jsonOutput = false;
 let includeFlow = true;
 let includeError = true;
 let includeSequence = false;
+let includeOverview = false;
 let maxDepth: number | undefined;
 let mode: "explicit" | "diff" | "all" = "explicit";
 let diffRef: string | undefined;
@@ -97,6 +102,10 @@ for (let i = 0; i < args.length; i++) {
     mode = "all";
   } else if (arg === "--json") {
     jsonOutput = true;
+  } else if (arg === "--overview") {
+    includeOverview = true;
+  } else if (arg === "--no-overview") {
+    includeOverview = false;
   } else if (arg === "--no-flow") {
     includeFlow = false;
   } else if (arg === "--no-error") {
@@ -141,6 +150,15 @@ async function main() {
   if (jsonOutput) {
     console.log(JSON.stringify(result, null, 2));
     return;
+  }
+
+  if (includeOverview) {
+    const tree = buildScopeTree(result);
+    if (tree.scopes.length > 0) {
+      mermaidBlock("Overview", renderOverviewDiagram(tree));
+    } else {
+      console.log("### Overview\n\nNo scopes found for overview.\n");
+    }
   }
 
   if (includeFlow) {
