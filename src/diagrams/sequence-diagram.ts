@@ -6,6 +6,7 @@ import type {
   ServiceInfo,
   LayerInfo,
 } from "../analysis/analyzer.js";
+import type { ScopeTree, ScopeNode } from "../analysis/scope-tree.js";
 import { splitConnectedComponents } from "../analysis/graph-utils.js";
 
 // ---------------------------------------------------------------------------
@@ -26,9 +27,13 @@ export interface SequenceDiagramResult {
  * Render one ZenUML sequence diagram per top-level scope (gen function or
  * pipe chain). Synthetic combinator scopes (containing "$") are expanded
  * inline and not rendered as standalone diagrams.
+ *
+ * When a ScopeTree is provided, uses its signature data as a fallback for
+ * type comments on scopes where node-level type data is missing.
  */
 export function renderSequenceDiagrams(
   analysis: AnalysisResult,
+  scopeTree?: ScopeTree,
 ): SequenceDiagramResult[] {
   const components = splitConnectedComponents(analysis);
   const results: SequenceDiagramResult[] = [];
@@ -38,6 +43,14 @@ export function renderSequenceDiagrams(
 
   // Service name set for quick lookup
   const serviceNames = new Set(analysis.services.map((s) => s.name));
+
+  // Build scope name → ScopeNode map for signature fallback
+  const scopeTreeMap = new Map<string, ScopeNode>();
+  if (scopeTree) {
+    for (const s of scopeTree.scopes) {
+      scopeTreeMap.set(s.name, s);
+    }
+  }
 
   for (const comp of components) {
     if (comp.nodes.length <= 1) continue;
@@ -51,6 +64,7 @@ export function renderSequenceDiagrams(
       scopeMap,
       serviceNames,
       analysis.services,
+      scopeTreeMap,
     );
     if (!diagram) continue;
 
@@ -78,6 +92,114 @@ export function renderSequenceDiagram(
 ): SequenceDiagramResult {
   const results = renderSequenceDiagrams(analysis);
   return results[0] ?? { label: "", mermaid: "zenuml\n" };
+}
+
+/**
+ * Render overview sequence diagrams showing scope-to-scope call chains.
+ * Produces one ZenUML diagram per root scope (scopes with outgoing edges
+ * but no incoming edges from the ScopeTree).
+ */
+export function renderOverviewSequence(
+  tree: ScopeTree,
+): SequenceDiagramResult[] {
+  const results: SequenceDiagramResult[] = [];
+
+  // Build adjacency: who calls whom
+  const outgoing = new Map<string, ScopeNode[]>();
+  const incoming = new Set<string>();
+
+  const scopeById = new Map<string, ScopeNode>();
+  for (const scope of tree.scopes) {
+    scopeById.set(scope.id, scope);
+  }
+
+  for (const edge of tree.edges) {
+    const source = scopeById.get(edge.from);
+    const target = scopeById.get(edge.to);
+    if (!source || !target) continue;
+
+    if (!outgoing.has(source.id)) outgoing.set(source.id, []);
+    outgoing.get(source.id)!.push(target);
+    incoming.add(target.id);
+  }
+
+  // Root scopes: have outgoing edges, no incoming edges
+  const roots = tree.scopes.filter(
+    (s) => outgoing.has(s.id) && !incoming.has(s.id),
+  );
+
+  for (const root of roots) {
+    const lines: string[] = ["zenuml"];
+
+    // Type comment for root
+    const rootTypeComment = buildScopeTypeComment(root);
+    if (rootTypeComment) lines.push(rootTypeComment);
+
+    lines.push(`@Starter(${sanitizeParticipant(root.name)})`);
+
+    // Walk call chain (BFS to avoid cycles)
+    const visited = new Set<string>();
+    renderOverviewCalls(root, outgoing, scopeById, visited, lines, "");
+
+    const label = `Overview: ${root.name}`;
+    results.push({ label, mermaid: lines.join("\n") });
+  }
+
+  return results;
+}
+
+function renderOverviewCalls(
+  scope: ScopeNode,
+  outgoing: Map<string, ScopeNode[]>,
+  scopeById: Map<string, ScopeNode>,
+  visited: Set<string>,
+  lines: string[],
+  indent: string,
+): void {
+  visited.add(scope.id);
+
+  const callees = outgoing.get(scope.id) ?? [];
+  for (const callee of callees) {
+    if (visited.has(callee.id)) continue;
+
+    const typeComment = buildScopeTypeComment(callee);
+    if (typeComment) lines.push(`${indent}${typeComment}`);
+
+    // Check if callee has its own calls
+    const calleeCallees = outgoing.get(callee.id) ?? [];
+    const hasChildren = calleeCallees.some((c) => !visited.has(c.id));
+
+    if (hasChildren) {
+      lines.push(`${indent}${sanitizeParticipant(callee.name)}() {`);
+      if (callee.handledErrors?.length) {
+        lines.push(`${indent}  // catches: ${callee.handledErrors.join(", ")}`);
+      }
+      renderOverviewCalls(callee, outgoing, scopeById, visited, lines, indent + "  ");
+      lines.push(`${indent}}`);
+    } else {
+      lines.push(`${indent}${sanitizeParticipant(callee.name)}()`);
+      if (callee.handledErrors?.length) {
+        lines.push(`${indent}// catches: ${callee.handledErrors.join(", ")}`);
+      }
+    }
+  }
+}
+
+function buildScopeTypeComment(scope: ScopeNode): string | undefined {
+  if (!scope.signature) return undefined;
+
+  const parts: string[] = [];
+  parts.push(scope.signature.success ?? "_");
+  if (scope.signature.error || scope.signature.requirements?.length) {
+    parts.push(scope.signature.error ?? "never");
+  }
+  if (scope.signature.requirements?.length) {
+    parts.push(scope.signature.requirements.join(" | "));
+  }
+
+  if (parts.length === 1 && parts[0] === "_") return undefined;
+
+  return `// ${scope.name}: Effect<${parts.join(", ")}>`;
 }
 
 // ---------------------------------------------------------------------------
@@ -120,20 +242,45 @@ function buildVarServiceMap(
 ): Map<string, string> {
   const map = new Map<string, string>();
 
+  // Pass 1: match service yields to the first direct lowercase-dot label
   for (let i = 0; i < ordered.length; i++) {
     const node = ordered[i];
     if (node.kind !== "yield") continue;
     if (!node.ref || !serviceNames.has(node.ref)) continue;
 
-    // Scan all subsequent nodes for "varName.method()" patterns.
-    // Only match lowercase-starting identifiers (local variables, not modules).
     for (let j = i + 1; j < ordered.length; j++) {
       const later = ordered[j];
       const dotMatch = later.label.match(/^([a-z_$][a-zA-Z0-9_$]*)\./);
       if (dotMatch && !map.has(dotMatch[1])) {
         map.set(dotMatch[1], node.ref);
-        break; // first match wins for this service yield
+        break;
       }
+    }
+  }
+
+  // Pass 2: for unmapped service yields, scan Effect.all elements
+  const mappedServices = new Set(map.values());
+  for (let i = 0; i < ordered.length; i++) {
+    const node = ordered[i];
+    if (node.kind !== "yield") continue;
+    if (!node.ref || !serviceNames.has(node.ref)) continue;
+    if (mappedServices.has(node.ref)) continue;
+
+    for (let j = i + 1; j < ordered.length; j++) {
+      const later = ordered[j];
+      const allElements = parseEffectAllElements(later.label);
+      if (!allElements) continue;
+      let found = false;
+      for (const elem of allElements) {
+        const elemMatch = elem.match(/^([a-z_$][a-zA-Z0-9_$]*)\./);
+        if (elemMatch && !map.has(elemMatch[1])) {
+          map.set(elemMatch[1], node.ref);
+          mappedServices.add(node.ref);
+          found = true;
+          break;
+        }
+      }
+      if (found) break;
     }
   }
 
@@ -190,6 +337,7 @@ function renderScope(
   scopeMap: Map<string, ScopeComponent>,
   serviceNames: Set<string>,
   services: ServiceInfo[],
+  scopeTreeMap?: Map<string, ScopeNode>,
 ): string | null {
   const ordered = orderNodes(nodes, edges);
   if (ordered.length === 0) return null;
@@ -235,8 +383,9 @@ function renderScope(
     }
   }
 
-  // Type annotation comment
-  const typeComment = buildTypeComment(scope, first);
+  // Type annotation comment (with ScopeTree signature fallback)
+  const scopeTreeNode = scopeTreeMap?.get(scope);
+  const typeComment = buildTypeComment(scope, first, scopeTreeNode);
   if (typeComment) lines.push(typeComment);
 
   // @Starter
@@ -248,23 +397,54 @@ function renderScope(
 
   if (needsTryCatch) {
     lines.push("try {");
-    // Include the initial effect and all non-error-handler nodes in the try body
-    const bodyNodes = ordered.filter((n) => !n.errorHandler);
-    for (const node of bodyNodes) {
-      // For the initial effect node, render its label directly (it's the pipe source)
-      if (node === first) {
-        lines.push(`  ${sanitizeZenUML(first.label)}`);
-        continue;
+
+    // Check if the initial node refs a gen sub-scope (gen-in-pipe pattern)
+    const genSubScope = first.ref?.endsWith("$gen")
+      ? lookupScope(first.ref, first.refFile ?? currentFile, scopeMap)
+      : undefined;
+
+    if (genSubScope) {
+      // Expand gen body inline inside try block
+      const subOrdered = orderNodes(genSubScope.nodes, genSubScope.edges);
+      // Build var→service map from the gen body nodes
+      const genVarServiceMap = buildVarServiceMap(subOrdered, serviceNames);
+      // Merge gen body mappings into the outer map
+      const mergedVarServiceMap = new Map([...varServiceMap, ...genVarServiceMap]);
+
+      const subBody = subOrdered[0]?.kind === "gen-start"
+        ? subOrdered.slice(1)
+        : subOrdered;
+
+      for (const subNode of subBody) {
+        const rendered = renderNode(
+          subNode,
+          mergedVarServiceMap,
+          scopeMap,
+          serviceNames,
+          currentFile,
+          "  ",
+        );
+        lines.push(...rendered);
       }
-      const rendered = renderNode(
-        node,
-        varServiceMap,
-        scopeMap,
-        serviceNames,
-        currentFile,
-        "  ",
-      );
-      lines.push(...rendered);
+    } else {
+      // Include the initial effect and all non-error-handler nodes in the try body
+      const bodyNodes = ordered.filter((n) => !n.errorHandler);
+      for (const node of bodyNodes) {
+        // For the initial effect node, render its label directly (it's the pipe source)
+        if (node === first) {
+          lines.push(`  ${sanitizeZenUML(first.label)}`);
+          continue;
+        }
+        const rendered = renderNode(
+          node,
+          varServiceMap,
+          scopeMap,
+          serviceNames,
+          currentFile,
+          "  ",
+        );
+        lines.push(...rendered);
+      }
     }
     // catch block
     const errorType = findErrorTypeForHandler(ordered, errorHandlerNode!);
@@ -377,6 +557,32 @@ function renderNode(
     const varName = extractVarFromLabel(node.label);
     lines.push(`${indent}${varName} = Effect.fork()`);
     return lines;
+  }
+
+  // Gen-in-pipe inline expansion: $gen refs expand their body inline
+  // instead of creating a named block
+  if (node.ref?.endsWith("$gen")) {
+    const genComp = lookupScope(node.ref, node.refFile ?? currentFile, scopeMap);
+    if (genComp) {
+      const subOrdered = orderNodes(genComp.nodes, genComp.edges);
+      const genVarMap = buildVarServiceMap(subOrdered, serviceNames);
+      const mergedMap = new Map([...varServiceMap, ...genVarMap]);
+      const subBody = subOrdered[0]?.kind === "gen-start"
+        ? subOrdered.slice(1)
+        : subOrdered;
+      for (const subNode of subBody) {
+        const rendered = renderNode(
+          subNode,
+          mergedMap,
+          scopeMap,
+          serviceNames,
+          currentFile,
+          indent,
+        );
+        lines.push(...rendered);
+      }
+      return lines;
+    }
   }
 
   // Cross-file ref expansion (non-combinator)
@@ -530,14 +736,20 @@ function renderLayerDiagram(layers: LayerInfo[]): string | null {
 function buildTypeComment(
   scope: string,
   node: AnalysisNode,
+  scopeTreeNode?: ScopeNode,
 ): string | undefined {
+  // Use node-level type data, falling back to ScopeTree signature
+  const successType = node.successType ?? scopeTreeNode?.signature?.success;
+  const errorType = node.errorType ?? scopeTreeNode?.signature?.error;
+  const requirements = node.requirements ?? scopeTreeNode?.signature?.requirements;
+
   const parts: string[] = [];
-  parts.push(node.successType ?? "_");
-  if (node.errorType || (node.requirements && node.requirements.length > 0)) {
-    parts.push(node.errorType ?? "never");
+  parts.push(successType ?? "_");
+  if (errorType || (requirements && requirements.length > 0)) {
+    parts.push(errorType ?? "never");
   }
-  if (node.requirements && node.requirements.length > 0) {
-    parts.push(node.requirements.join(" | "));
+  if (requirements && requirements.length > 0) {
+    parts.push(requirements.join(" | "));
   }
 
   // Don't emit comment if all parts are trivial

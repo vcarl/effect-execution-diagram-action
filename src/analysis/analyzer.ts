@@ -237,12 +237,20 @@ function analyzeFile(
 
     const description = getJsDocDescription(call);
 
+    // Detect gen-in-pipe: if initial is Effect.gen(...), expand it into a synthetic scope
+    let genInPipeScope: string | undefined;
+    if (ts.isCallExpression(initial) && isEffectGen(initial)) {
+      const syntheticScope = `${scope ?? "anon"}$gen`;
+      analyzeEffectGen(initial, file, syntheticScope);
+      genInPipeScope = syntheticScope;
+    }
+
     // Emit entry node for the initial expression
     const entryId = nextId();
     const entryTypeInfo = getEffectTypeInfo(initial, project);
     const entryErrorInfo = getErrorTypeAtNode(initial, project);
-    const entryRef = getRefName(initial);
-    const entryRefFile = resolveRefFile(initial, project);
+    const entryRef = genInPipeScope ?? getRefName(initial);
+    const entryRefFile = genInPipeScope ? file : resolveRefFile(initial, project);
 
     nodes.push({
       id: entryId,

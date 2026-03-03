@@ -4,7 +4,7 @@ import type { DiagramSection } from "../github/comment.js";
 import { renderOverviewDiagram } from "./overview-diagram.js";
 import { renderFlowDiagrams } from "./flow-diagram.js";
 import { renderErrorDiagrams } from "./error-diagram.js";
-import { renderSequenceDiagrams } from "./sequence-diagram.js";
+import { renderSequenceDiagrams, renderOverviewSequence } from "./sequence-diagram.js";
 import { renderLayerDiagram } from "./layer-diagram.js";
 
 // ---------------------------------------------------------------------------
@@ -108,8 +108,9 @@ export const sequenceLens: DiagramLens = {
     return false;
   },
   render(ctx) {
-    const diagrams = renderSequenceDiagrams(ctx.analysis);
-    return diagrams.map(d => ({
+    const overview = renderOverviewSequence(ctx.scopeTree);
+    const detail = renderSequenceDiagrams(ctx.analysis, ctx.scopeTree);
+    return [...overview, ...detail].map(d => ({
       title: `Sequence: ${d.label}`,
       mermaid: d.mermaid,
       ...(d.truncated ? { truncated: true } : {}),
