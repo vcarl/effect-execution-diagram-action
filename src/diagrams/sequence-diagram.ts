@@ -139,7 +139,7 @@ export function renderOverviewSequence(
 
     // Walk call chain (BFS to avoid cycles)
     const visited = new Set<string>();
-    renderOverviewCalls(root, outgoing, scopeById, visited, lines, "");
+    renderOverviewCalls(root, outgoing, visited, lines, "");
 
     const label = `Overview: ${root.name}`;
     results.push({ label, mermaid: lines.join("\n") });
@@ -151,7 +151,6 @@ export function renderOverviewSequence(
 function renderOverviewCalls(
   scope: ScopeNode,
   outgoing: Map<string, ScopeNode[]>,
-  scopeById: Map<string, ScopeNode>,
   visited: Set<string>,
   lines: string[],
   indent: string,
@@ -174,7 +173,7 @@ function renderOverviewCalls(
       if (callee.handledErrors?.length) {
         lines.push(`${indent}  // catches: ${callee.handledErrors.join(", ")}`);
       }
-      renderOverviewCalls(callee, outgoing, scopeById, visited, lines, indent + "  ");
+      renderOverviewCalls(callee, outgoing, visited, lines, indent + "  ");
       lines.push(`${indent}}`);
     } else {
       lines.push(`${indent}${sanitizeParticipant(callee.name)}()`);
@@ -187,19 +186,12 @@ function renderOverviewCalls(
 
 function buildScopeTypeComment(scope: ScopeNode): string | undefined {
   if (!scope.signature) return undefined;
-
-  const parts: string[] = [];
-  parts.push(scope.signature.success ?? "_");
-  if (scope.signature.error || scope.signature.requirements?.length) {
-    parts.push(scope.signature.error ?? "never");
-  }
-  if (scope.signature.requirements?.length) {
-    parts.push(scope.signature.requirements.join(" | "));
-  }
-
-  if (parts.length === 1 && parts[0] === "_") return undefined;
-
-  return `// ${scope.name}: Effect<${parts.join(", ")}>`;
+  return formatTypeComment(
+    scope.name,
+    scope.signature.success,
+    scope.signature.error,
+    scope.signature.requirements,
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -404,28 +396,9 @@ function renderScope(
       : undefined;
 
     if (genSubScope) {
-      // Expand gen body inline inside try block
-      const subOrdered = orderNodes(genSubScope.nodes, genSubScope.edges);
-      // Build var→service map from the gen body nodes
-      const genVarServiceMap = buildVarServiceMap(subOrdered, serviceNames);
-      // Merge gen body mappings into the outer map
-      const mergedVarServiceMap = new Map([...varServiceMap, ...genVarServiceMap]);
-
-      const subBody = subOrdered[0]?.kind === "gen-start"
-        ? subOrdered.slice(1)
-        : subOrdered;
-
-      for (const subNode of subBody) {
-        const rendered = renderNode(
-          subNode,
-          mergedVarServiceMap,
-          scopeMap,
-          serviceNames,
-          currentFile,
-          "  ",
-        );
-        lines.push(...rendered);
-      }
+      lines.push(...expandGenBody(
+        genSubScope, varServiceMap, scopeMap, serviceNames, currentFile, "  ",
+      ));
     } else {
       // Include the initial effect and all non-error-handler nodes in the try body
       const bodyNodes = ordered.filter((n) => !n.errorHandler);
@@ -564,23 +537,9 @@ function renderNode(
   if (node.ref?.endsWith("$gen")) {
     const genComp = lookupScope(node.ref, node.refFile ?? currentFile, scopeMap);
     if (genComp) {
-      const subOrdered = orderNodes(genComp.nodes, genComp.edges);
-      const genVarMap = buildVarServiceMap(subOrdered, serviceNames);
-      const mergedMap = new Map([...varServiceMap, ...genVarMap]);
-      const subBody = subOrdered[0]?.kind === "gen-start"
-        ? subOrdered.slice(1)
-        : subOrdered;
-      for (const subNode of subBody) {
-        const rendered = renderNode(
-          subNode,
-          mergedMap,
-          scopeMap,
-          serviceNames,
-          currentFile,
-          indent,
-        );
-        lines.push(...rendered);
-      }
+      lines.push(...expandGenBody(
+        genComp, varServiceMap, scopeMap, serviceNames, currentFile, indent,
+      ));
       return lines;
     }
   }
@@ -647,6 +606,35 @@ function renderNode(
 // ---------------------------------------------------------------------------
 // Sub-scope expansion
 // ---------------------------------------------------------------------------
+
+/**
+ * Expand a gen sub-scope ($gen) inline: order nodes, merge var→service maps
+ * from the gen body, skip gen-start, and render remaining nodes.
+ */
+function expandGenBody(
+  comp: ScopeComponent,
+  outerVarServiceMap: Map<string, string>,
+  scopeMap: Map<string, ScopeComponent>,
+  serviceNames: Set<string>,
+  currentFile: string,
+  indent: string,
+): string[] {
+  const lines: string[] = [];
+  const subOrdered = orderNodes(comp.nodes, comp.edges);
+  const genVarMap = buildVarServiceMap(subOrdered, serviceNames);
+  const mergedMap = new Map([...outerVarServiceMap, ...genVarMap]);
+
+  const subBody = subOrdered[0]?.kind === "gen-start"
+    ? subOrdered.slice(1)
+    : subOrdered;
+
+  for (const subNode of subBody) {
+    lines.push(...renderNode(
+      subNode, mergedMap, scopeMap, serviceNames, currentFile, indent,
+    ));
+  }
+  return lines;
+}
 
 function expandSubScope(
   node: AnalysisNode,
@@ -738,24 +726,33 @@ function buildTypeComment(
   node: AnalysisNode,
   scopeTreeNode?: ScopeNode,
 ): string | undefined {
-  // Use node-level type data, falling back to ScopeTree signature
-  const successType = node.successType ?? scopeTreeNode?.signature?.success;
-  const errorType = node.errorType ?? scopeTreeNode?.signature?.error;
-  const requirements = node.requirements ?? scopeTreeNode?.signature?.requirements;
+  return formatTypeComment(
+    scope,
+    node.successType ?? scopeTreeNode?.signature?.success,
+    node.errorType ?? scopeTreeNode?.signature?.error,
+    node.requirements ?? scopeTreeNode?.signature?.requirements,
+  );
+}
 
+/** Format an Effect type signature as a ZenUML comment. */
+function formatTypeComment(
+  name: string,
+  success: string | undefined,
+  error: string | undefined,
+  requirements: string[] | undefined,
+): string | undefined {
   const parts: string[] = [];
-  parts.push(successType ?? "_");
-  if (errorType || (requirements && requirements.length > 0)) {
-    parts.push(errorType ?? "never");
+  parts.push(success ?? "_");
+  if (error || (requirements && requirements.length > 0)) {
+    parts.push(error ?? "never");
   }
   if (requirements && requirements.length > 0) {
     parts.push(requirements.join(" | "));
   }
 
-  // Don't emit comment if all parts are trivial
   if (parts.length === 1 && parts[0] === "_") return undefined;
 
-  return `// ${scope}: Effect<${parts.join(", ")}>`;
+  return `// ${name}: Effect<${parts.join(", ")}>`;
 }
 
 /** Parse `Effect.all([a(), b(), c()])` labels into individual elements. */
